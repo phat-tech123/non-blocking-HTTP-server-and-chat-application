@@ -106,8 +106,9 @@ async def handle_client_coroutine(reader, writer):
 
     # Handle client in asynchronous mode
     while True:
-          daemon = HttpAdapter(None, None, None, None, None)
-           await daemon.handle_client_coroutine(reader, writer)
+          #daemon = HttpAdapter(None, None, None, None, None)
+          daemon = HttpAdapter(None, None, None, addr, None)
+          await daemon.handle_client_coroutine(reader, writer)
 
 async def async_server(ip="0.0.0.0", port=7000, routes={}):
     print("[Backend] async_server **ASYNC** listening on port {}".format(port))
@@ -185,6 +186,8 @@ def run_backend(ip, port, routes):
             #            change global variable mode_async to select the mechanism
             if mode_async == "callback":
                # Callback implementation - Event driven architecture
+               server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+
                server.setblocking(False)
 
                events = sel.select(timeout=None)
@@ -194,7 +197,14 @@ def run_backend(ip, port, routes):
 
             else:
                # Baseline multi-thread implementation
-               #client_thread = threading.Thread...
+               client_thread = threading.Thread(
+                       target=handle_client,
+                       args=(ip, port, conn, addr, routes)
+                       )
+
+               client_thread.daemon = True
+
+               client_thread.start()
 
 
     except socket.error as e:

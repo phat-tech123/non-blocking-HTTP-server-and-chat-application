@@ -106,19 +106,89 @@ class HttpAdapter:
         resp = self.response
 
         # Handle the request
-        msg = conn.recv(1024).decode()
-        req.prepare(msg, routes)
+        #msg = conn.recv(1024).decode()
+        #----------------------------------------------------------------------------------------------------
+        # Chuyển socket riêng của client này sang non-blocking
+        conn.setblocking(False)
+        
+        raw_data = b""
+        import time
+        timeout = 5.0  # Chờ tối đa 5s, nếu client không gửi data thì cắt để bảo vệ server
+        start_time = time.time()
+
+        while True:
+            # 1. Cơ chế Timeout chống kẹt luồng (chống Slowloris Attack)
+            if time.time() - start_time > timeout:
+                print("[HttpAdapter] Timeout: Client send data too slow.")
+                break
+                
+            try:
+                # 2. Cố gắng đọc dữ liệu
+                chunk = conn.recv(4096)
+                
+                if not chunk:
+                    # Client chủ động đóng kết nối (gửi cờ FIN)
+                    break
+                    
+                raw_data += chunk
+                start_time = time.time() # Reset lại đồng hồ báo thức khi có data mới
+                
+                # 3. Điều kiện dừng: Nếu lượng data nhận được nhỏ hơn buffer, 
+                # khả năng cao là đã đọc hết gói tin request trong buffer của hệ điều hành.
+                if len(chunk) < 4096:
+                    break
+                    
+            except BlockingIOError:
+                # 4. TRỌNG TÂM: Lỗi này văng ra khi buffer trống (chưa có data).
+                # Thay vì treo, ta cho Thread nghỉ ngơi 0.01s (để không ngốn 100% CPU) rồi lặp lại.
+                time.sleep(0.01)
+                continue
+            except socket.error as e:
+                print(f"[HttpAdapter] Lỗi socket khi đọc: {e}")
+                break
+            
+            if not raw_data.strip():
+                print("[HttpAdapter] Không có dữ liệu, ngắt kết nối để bảo vệ server.")
+                conn.close()
+                return # Dừng hàm tại đây luôn, không gọi req.prepare() nữa
+
+        # Decode dữ liệu thô ra dạng chuỗi
+        msg = raw_data.decode("utf-8", errors="ignore")
+        #----------------------------------------------------------------------------------------------------
+
+        #req.prepare(msg, routes)
+        try:
+            req.prepare(msg, routes)
+        except ValueError:
+            print("[HttpAdapter] Client gửi HTTP Request sai định dạng (thiếu Method/Path/Version).")
+            conn.sendall(b"HTTP/1.1 400 Bad Request\r\n\r\n")
+            conn.close()
+            return
+
         print("[HttpAdapter] Invoke handle_client connection {}".format(addr))
 
         # Handle request hook
         if req.hook:
-            #
-            # TODO: handle for App hook here
-            #
-            response = ""
+            # Chạy hàm chức năng (App Hook) tương ứng với Route
+            # (Phần này Thành viên 3 và 4 sẽ viết logic bên trong hook)
+            hook_data = req.hook(headers=req.headers, body=req.body)
+            # Tạm gọi hàm build_response theo thiết kế của Framework
+            response_bytes = resp.build_response(req)
+        else:
+            # Nếu không khớp route nào, build response mặc định (VD: 404 Not Found)
+            response_bytes = resp.build_response(req)
 
-        #print("[HttpAdapter] Response content {}".format(response))
-        conn.sendall(response)
+        # Gửi dữ liệu trả về cho client
+        if response_bytes:
+            try:
+                conn.sendall(response_bytes)
+            except BlockingIOError:
+                # Xử lý an toàn: Nếu buffer ghi TCP của HĐH bị đầy, bỏ qua hoặc thiết lập vòng lặp send
+                pass
+            except socket.error as e:
+                print(f"[HttpAdapter] Lỗi khi gửi dữ liệu: {e}")
+                
+        # Hoàn thành 1 chu kỳ request-response, đóng kết nối
         conn.close()
 
     async def handle_client_coroutine(self, reader, writer):

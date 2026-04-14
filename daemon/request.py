@@ -18,6 +18,7 @@ This module provides a Request object to manage and persist
 request settings (cookies, auth, proxies).
 """
 from .dictionary import CaseInsensitiveDict
+import base64
 
 class Request():
     """The fully mutable "class" `Request <Request>` object,
@@ -45,9 +46,9 @@ class Request():
         "_raw_body",
         "reason",
         "cookies",
-        "body",
         "routes",
         "hook",
+        "auth"
     ]
 
     def __init__(self):
@@ -56,49 +57,66 @@ class Request():
         #: HTTP URL to send the request to.
         self.url = None
         #: dictionary of HTTP headers.
-        self.headers = None
+        self.headers = CaseInsensitiveDict()
         #: HTTP path
         self.path = None        
         # The cookies set used to create Cookie header
-        self.cookies = None
+        self.cookies = {}
         #: request body to send to the server.
         self.body = None
         # The raw header
-        self._raw_headers = None
+        self._raw_headers = ""
         #: The raw body
-        self._raw_body = None
+        self._raw_body = ""
         #: Routes
         self.routes = {}
         #: Hook point for routed mapped-path
         self.hook = None
+        #: Authentication tuple (username, password)
+        self.auth = None
 
     def extract_request_line(self, request):
         try:
             lines = request.splitlines()
+            if not lines:
+                return None, None, None
             first_line = lines[0]
-            method, path, version = first_line.split()
+            
+            # An toàn hơn: Tách dựa trên khoảng trắng và kiểm tra số lượng phần tử
+            parts = first_line.split()
+            if len(parts) == 3:
+                method, path, version = parts
+            elif len(parts) == 2:
+                method, path = parts
+                version = "HTTP/1.1" # Default fallback
+            else:
+                raise ValueError("Malformed request line")
 
             if path == '/':
                 path = '/index.html'
-        except Exception:
-            return None, None
-
-        return method, path, version
+                
+            return method, path, version
+        except Exception as e:
+            print(f"[Request Error] extract_request_line: {e}")
+            raise ValueError("not enough values to unpack")
              
-    def prepare_headers(self, request):
+    def prepare_headers(self, raw_headers):
         """Prepares the given HTTP headers."""
-        lines = request.split('\r\n')
+        lines = raw_headers.split('\r\n')
         headers = {}
+        # Bỏ qua dòng đầu tiên vì nó là Request Line (GET / HTTP/1.1)
         for line in lines[1:]:
             if ': ' in line:
                 key, val = line.split(': ', 1)
-                headers[key.lower()] = val
+                # Lưu ý: Không cần .lower() ở đây vì CaseInsensitiveDict sẽ tự lo
+                headers[key] = val
         return headers
 
     def fetch_headers_body(self, request):
         """Prepares the given HTTP headers."""
         # Split request into header section and body section
-        parts = request.split("\r\n\r\n", 1)  # split once at blank line
+        # HTTP quy định kết thúc header bằng 2 dấu ngắt dòng liên tiếp
+        parts = request.split("\r\n\r\n", 1)  
 
         _headers = parts[0]
         _body = parts[1] if len(parts) > 1 else ""
@@ -107,62 +125,81 @@ class Request():
     def prepare(self, request, routes=None):
         """Prepares the entire request with the given parameters."""
 
-        # Prepare the request line from the request header
-        print("[Request] prepare request missg {}".format(request))
+        # 1. Prepare the request line from the request header
+        print("[Request] prepare request msg:\n{}".format(request.splitlines()[0] if request else "EMPTY"))
         self.method, self.path, self.version = self.extract_request_line(request)
         print("[Request] {} path {} version {}".format(self.method, self.path, self.version))
 
-        #
+        # 2. Tách Header và Body
+        self._raw_headers, self._raw_body = self.fetch_headers_body(request)
+        
+        # 3. Phân tích Headers và nạp vào CaseInsensitiveDict (Sửa lỗi NoneType)
+        header_dict = self.prepare_headers(self._raw_headers)
+        self.headers = CaseInsensitiveDict(header_dict)
+
+        # 4. Gán Body
+        self.body = self._raw_body
+
         # @bksysnet Preapring the webapp hook with AsynapRous instance
         # The default behaviour with HTTP server is empty routed
-        #
-        # TODO manage the webapp hook in this mounting point
-        #
-        
-        if not routes == {}:
+        if routes and routes != {}:
             self.routes = routes
             print("[Request] Routing METHOD {} path {}".format(self.method, self.path))
             self.hook = routes.get((self.method, self.path))
-            print("[Request] Hook has request {}".format(request))
-            #
-            # self.hook manipulation goes here
-            # ...
-            #
+            print("[Request] Hook mapped for request")
 
-        self._raw_heaers = ""
-        self._raw_body =  ""
-        cookies = self.headers.get('cookie', '')
-            #
-            #  TODO: implement the cookie function here
-            #        by parsing the header            #
+        # 5. Phân tích Cookie (RFC 6265)
+        raw_cookie = self.headers.get('cookie', '')
+        if raw_cookie:
+            # Tách các cặp cookie cách nhau bằng dấu chấm phẩy
+            cookie_pairs = raw_cookie.split(';')
+            for pair in cookie_pairs:
+                if '=' in pair:
+                    k, v = pair.strip().split('=', 1)
+                    self.cookies[k] = v
+
+        # 6. Phân tích Authentication (RFC 2617 - Basic Auth)
+        raw_auth = self.headers.get('authorization', '')
+        if raw_auth.lower().startswith('basic '):
+            # Lấy phần chuỗi đã mã hóa Base64 phía sau chữ "Basic "
+            encoded_str = raw_auth.split(' ', 1)[1]
+            try:
+                # Giải mã Base64 ra chuỗi "user:pass"
+                decoded_str = base64.b64decode(encoded_str).decode('utf-8')
+                if ':' in decoded_str:
+                    username, password = decoded_str.split(':', 1)
+                    self.auth = (username, password)
+                    print(f"[Request] Basic Auth decoded for user: {username}")
+            except Exception as e:
+                print(f"[Request] Error decoding Basic Auth: {e}")
 
         return
 
-    def prepare_body(self, data, files, json=None):
+    def prepare_body(self, data, files=None, json=None):
+        self.body = data
         self.prepare_content_length(self.body)
-        self.body = body
-        #
-        # TODO prepare the request authentication
-        #
-	# self.auth = ...
         return
-
 
     def prepare_content_length(self, body):
-        self.headers["Content-Length"] = "0"
-        #
-        # TODO prepare the request authentication
-        #
-	# self.auth = ...
+        if body:
+            # Nếu body là string, tính len encode utf-8. Nếu là bytes, tính trực tiếp.
+            length = len(body.encode('utf-8')) if isinstance(body, str) else len(body)
+            self.headers["Content-Length"] = str(length)
+        else:
+            self.headers["Content-Length"] = "0"
         return
 
-
     def prepare_auth(self, auth, url=""):
-        #
-        # TODO prepare the request authentication
-        #
-	# self.auth = ...
+        """Dùng cho Proxy/Client: Đóng gói user/pass thành header Basic Auth"""
+        if isinstance(auth, tuple) and len(auth) == 2:
+            credential = f"{auth[0]}:{auth[1]}"
+            encoded_credential = base64.b64encode(credential.encode('utf-8')).decode('utf-8')
+            self.headers["Authorization"] = f"Basic {encoded_credential}"
+            self.auth = auth
         return
 
     def prepare_cookies(self, cookies):
-            self.headers["Cookie"] = cookies
+        """Đóng gói Dict cookie thành chuỗi header hợp lệ"""
+        if isinstance(cookies, dict) and cookies:
+            cookie_str = "; ".join([f"{k}={v}" for k, v in cookies.items()])
+            self.headers["Cookie"] = cookie_str

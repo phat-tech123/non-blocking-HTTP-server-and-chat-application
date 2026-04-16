@@ -145,9 +145,9 @@ class ChatRepository:
         """
 
         with self._connect() as conn:
-            if not self._user_exists(conn, user_id):
+            if not self.get_user_by_id(conn, user_id):
                 raise ValueError("User chưa tồn tại: {}".format(user_id))
-            if self._peer_exists(conn, user_id):
+            if self.get_peer_by_user_id(conn, user_id):
                 raise ValueError("Peer đã tồn tại: {}".format(user_id))
 
             conn.execute(sql, (user_id, display_name, ip, port, now, now, now))

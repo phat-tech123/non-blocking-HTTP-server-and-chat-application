@@ -189,6 +189,8 @@ class ChatRepository:
     - update_peer: Cập nhật lại thông tin peer theo user_id
     - get_peer_by_user_id: Lấy peer theo user_id
     - get_active_peers: Trả về danh sách peer đang hoạt động
+    - get_peer_detail_by_user_id: Lấy chi tiết peer theo user_id (bao gồm thông tin user)
+    - get_peer_detail_by_id: Lấy chi tiết peer theo peer_id (bao gồm thông tin user)
     """
 
     # Tạo peer mới
@@ -275,6 +277,34 @@ class ChatRepository:
         ).fetchone()
         return _row_to_dict(row) if row is not None else None
 
+    # Lấy chi tiết peer theo user_id
+    def get_peer_detail_by_user_id(self, user_id):
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT p.*, u.username, u.user_id
+                FROM peers p
+                JOIN users u ON u.user_id = p.peer_uuid
+                WHERE p.peer_uuid = ?
+                """,
+                (user_id,),
+            ).fetchone()
+        return _row_to_dict(row)
+
+    # Lấy chi tiết peer theo peer_id
+    def get_peer_detail_by_id(self, peer_id):
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT p.*, u.username, u.user_id
+                FROM peers p
+                JOIN users u ON u.user_id = p.peer_uuid
+                WHERE p.id = ?
+                """,
+                (peer_id,),
+            ).fetchone()
+        return _row_to_dict(row)
+
     # Trả về danh sách peer đang hoạt động
     def get_active_peers(self):
         with self._connect() as conn:
@@ -294,6 +324,7 @@ class ChatRepository:
     - create_peer_connection: Tạo peer_connection khi có kết nối mới giữa 2 peer
     - update_connection_status: Cập nhật trạng thái kết nối của một user
     - update_connection_status_by_id: Cập nhật trạng thái một kết nối theo id
+    - get_peer_connections: Lấy danh sách kết nối theo peer_id hoặc user_id hoặc trạng thái
     """
 
     # Tạo peer_connection
@@ -360,6 +391,39 @@ class ChatRepository:
             ).fetchone()
 
         return _row_to_dict(row), cur.rowcount
+
+    # Lấy danh sách kết nối theo peer_id hoặc user_id
+    def get_peer_connections(self, peer_id=None, user_id=None, status=None):
+        clauses = []
+        params = []
+
+        if peer_id is not None:
+            clauses.append("(from_peer_id = ? OR to_peer_id = ?)")
+            params.extend([peer_id, peer_id])
+
+        elif user_id is not None:
+            clauses.append("(from_user_id = ? OR to_user_id = ?)")
+            params.extend([user_id, user_id])
+
+        elif status is not None:
+            clauses.append("status = ?")
+            params.append(status)
+
+        where_sql = ""
+        if clauses:
+            where_sql = " WHERE " + " AND ".join(clauses)
+
+        sql = (
+            "SELECT id, from_peer_id, to_peer_id, from_user_id, to_user_id, status, created_at"
+            " FROM peer_connections"
+            + where_sql
+            + " ORDER BY id DESC"
+        )
+
+        with self._connect() as conn:
+            rows = conn.execute(sql, tuple(params)).fetchall()
+
+        return [dict(r) for r in rows]
 
 
     """

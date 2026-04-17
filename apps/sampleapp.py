@@ -317,7 +317,7 @@ def logout(headers="guest", body="anonymous"):
             user_id = user["user_id"]
             peer_exists = repo.get_peer_by_user_id(conn, user_id)
 
-        _, _ = repo.update_user_status(user_id, "INACTIVE")
+        user_data = repo.update_user_status(user_id, "INACTIVE")
 
         peer = None
         if peer_exists:

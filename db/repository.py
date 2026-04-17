@@ -181,7 +181,7 @@ class ChatRepository:
         if row is None:
             raise ValueError("User không tồn tại: {}".format(user_id))
 
-        return _row_to_dict(row), cur.rowcount
+        return _row_to_dict(row)
 
     """
     Truy vấn table peers

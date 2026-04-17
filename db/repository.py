@@ -165,7 +165,7 @@ class ChatRepository:
                     updated_at = ?
                 WHERE user_id = ?
                 """,
-                (status, now, user_id),
+                (status, now, user_id,),
             )
             conn.commit()
 

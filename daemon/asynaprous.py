@@ -54,7 +54,14 @@ class AsynapRous:
         self.routes = {}
         self.ip = None
         self.port = None
+        self.state = {}
         return
+
+    def set_state(self, key, value):
+        self.state[key] = value
+
+    def get_state(self, key, default=None):
+        return self.state.get(key, default)
 
     def prepare_address(self, ip, port):
         """

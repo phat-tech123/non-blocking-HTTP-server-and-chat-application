@@ -156,7 +156,7 @@ Danh sách api:
 - POST /channels/join: Thêm thành viên vào channel
 - POST /channels/list: Liệt kê channel theo user
 - POST /channels/messages: Xem lịch sử tin nhắn trong channel
-- POST /messages/direct: Gửi tin nhắn trực tiếp giữa 2 peer
+- POST /messages/direct: Gửi direct, luôn lưu DB; offline thì chỉ lưu, online thì lưu + realtime
 - POST /notifications/list: Lấy danh sách thông báo của user
 - POST /notifications/read: Đánh dấu thông báo đã đọc
 """
@@ -621,7 +621,7 @@ def list_channel_messages(headers="guest", body="anonymous"):
         return error_response(str(ex), "LIST_MESSAGES_FAILED")
 
 
-# Gửi tin nhắn (direct)
+# Gửi tin nhắn direct: luôn lưu DB, realtime chỉ khi cả 2 peer đang ACTIVE
 @app.route('/messages/direct', methods=['POST'])
 def send_direct_message(headers="guest", body="anonymous"):
     payload = parse_json_body(body)
@@ -638,6 +638,14 @@ def send_direct_message(headers="guest", body="anonymous"):
     except (TypeError, ValueError):
         return error_response("sender_peer_id/target_peer_id is invalid", "VALIDATION_ERROR")
 
+    channel_id = payload.get("channel_id")
+
+    if channel_id is not None:
+        try:
+            channel_id = int(channel_id)
+        except (TypeError, ValueError):
+            return error_response("channel_id is invalid", "VALIDATION_ERROR")
+
     body_text = str(payload["body"]).strip()
     if not body_text:
         return error_response("Message body must not be empty", "VALIDATION_ERROR")
@@ -645,12 +653,22 @@ def send_direct_message(headers="guest", body="anonymous"):
     repo = get_repo()
 
     try:
-        with repo._connect() as conn:
-            sender_user_id = repo.get_user_id_by_peer_id(conn, sender_peer_id)
-            target_user_id = repo.get_user_id_by_peer_id(conn, target_peer_id)
+        sender_peer = repo.get_peer_detail_by_id(sender_peer_id)
+        if sender_peer is None:
+            return error_response("Sender peer not found", "SENDER_PEER_NOT_FOUND")
+
+        target_peer = repo.get_peer_detail_by_id(target_peer_id)
+        if target_peer is None:
+            return error_response("Target peer not found", "TARGET_PEER_NOT_FOUND")
+
+        sender_user_id = sender_peer["user_id"]
+        target_user_id = target_peer["user_id"]
+
+        sender_active = str(sender_peer.get("status", "")).upper() == "ACTIVE"
+        target_active = str(target_peer.get("status", "")).upper() == "ACTIVE"
 
         message = repo.create_message(
-            channel_id=None,
+            channel_id=channel_id,
             sender_peer_id=sender_peer_id,
             sender_user_id=sender_user_id,
             body=body_text,
@@ -659,12 +677,27 @@ def send_direct_message(headers="guest", body="anonymous"):
             target_user_id=target_user_id,
         )
 
+        # Luon tao notification de peer dich doc lai khi login/vao channel sau.
         repo.create_notification(target_peer_id, target_user_id, message["id"])
 
-        # TODO: Gửi tin nhắn
+        delivery_mode = "stored_only"
+        realtime_status = "not_applicable"
+        if sender_active and target_active:
+            delivery_mode = "realtime_and_stored"
+            realtime_status = "pending_network_integration"
+            # TODO: Gửi tin nhắn P2P
+            
+        else:
+            realtime_status = "target_or_sender_inactive"
 
         return ok_response(
-            data={"message": message},
+            data={
+                "message": message,
+                "delivery_mode": delivery_mode,
+                "realtime_status": realtime_status,
+                "sender_active": sender_active,
+                "target_active": target_active,
+            },
             message="Direct message sent"
         )
     except Exception as ex:

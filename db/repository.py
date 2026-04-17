@@ -66,6 +66,7 @@ class ChatRepository:
     - create_user: Tạo user mới
     - get_user_id_by_peer_id: Lấy user_id từ peer_id hiện tại
     - get_user_by_id: Lấy user bằng user_id
+    - get_user_by_username: Lấy user bằng username
     - update_user: Cập nhật user đã tồn tại
     """
 
@@ -106,6 +107,14 @@ class ChatRepository:
         row = conn.execute(
             "SELECT 1 FROM users WHERE user_id = ?",
             (user_id,),
+        ).fetchone()
+        return _row_to_dict(row)
+
+    # Lấy user bằng username
+    def get_user_by_username(self, conn, username):
+        row = conn.execute(
+            "SELECT 1 FROM users WHERE username = ?",
+            (username,),
         ).fetchone()
         return _row_to_dict(row)
 

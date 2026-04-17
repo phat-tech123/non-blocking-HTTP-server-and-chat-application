@@ -68,6 +68,7 @@ class ChatRepository:
     - get_user_by_id: Lấy user bằng user_id
     - get_user_by_username: Lấy user bằng username
     - update_user: Cập nhật user đã tồn tại
+    - update_user_status: Cập nhật trạng thái user
     """
 
     # Tạo user mới
@@ -105,7 +106,11 @@ class ChatRepository:
     # Lấy user bằng user_id
     def get_user_by_id(self, conn, user_id):
         row = conn.execute(
-            "SELECT 1 FROM users WHERE user_id = ?",
+            """
+            SELECT user_id, username, display_name, password_hash, status, created_at, updated_at
+            FROM users
+            WHERE user_id = ?
+            """,
             (user_id,),
         ).fetchone()
         return _row_to_dict(row)
@@ -113,44 +118,88 @@ class ChatRepository:
     # Lấy user bằng username
     def get_user_by_username(self, conn, username):
         row = conn.execute(
-            "SELECT 1 FROM users WHERE username = ?",
+            """
+            SELECT user_id, username, display_name, password_hash, status, created_at, updated_at
+            FROM users
+            WHERE username = ?
+            """,
             (username,),
         ).fetchone()
         return _row_to_dict(row)
 
     # Cập nhật user đã tồn tại
-    def update_user(self, conn, user_id, display_name, username=None):
+    def update_user(self, conn, user_id, username=None):
         now = _utcnow_iso()
-        normalized_username = (username or "").strip() or "user_{}".format(user_id[:8])
+        normalized_username = (username or "").strip() or None
+
+        current_row = conn.execute(
+            "SELECT username, display_name FROM users WHERE user_id = ?",
+            (user_id,),
+        ).fetchone()
+
+        if current_row is None:
+            raise ValueError("User không tồn tại: {}".format(user_id))
+
+        effective_username = normalized_username or current_row["username"]
+
         conn.execute(
             """
             UPDATE users
             SET
                 username = ?,
-                display_name = ?,
-                status = 'ACTIVE',
                 updated_at = ?
             WHERE user_id = ?
             """,
-            (normalized_username, display_name, now, user_id),
+            (effective_username, now, user_id),
         )
+
+    # Cập nhật trạng thái user
+    def update_user_status(self, user_id, status):
+        now = _utcnow_iso()
+        with self._connect() as conn:
+            cur = conn.execute(
+                """
+                UPDATE users
+                SET
+                    status = ?,
+                    updated_at = ?
+                WHERE user_id = ?
+                """,
+                (status, now, user_id),
+            )
+            conn.commit()
+
+            row = conn.execute(
+                """
+                SELECT user_id, username, display_name, password_hash, status, created_at, updated_at
+                FROM users
+                WHERE user_id = ?
+                """,
+                (user_id,),
+            ).fetchone()
+
+        if row is None:
+            raise ValueError("User không tồn tại: {}".format(user_id))
+
+        return _row_to_dict(row), cur.rowcount
 
     """
     Truy vấn table peers
     - create_peer: Tạo peer mới
-    - update_peer_address: Cập nhật lại địa chỉ IP/port (khi người dùng đăng nhập lại và có sự thay đổi ip hay port)
+    - update_peer: Cập nhật lại thông tin peer theo user_id
     - get_peer_by_user_id: Lấy peer theo user_id
     - get_active_peers: Trả về danh sách peer đang hoạt động
     """
 
     # Tạo peer mới
-    def create_peer(self, ip, port, display_name, peer_uuid):
+    def create_peer(self, ip, port, peer_uuid, display_name=None, status="ACTIVE"):
         user_id = peer_uuid or str(uuid4())
         now = _utcnow_iso()
+        effective_display_name = (display_name or "").strip() or "peer_{}".format(user_id[:8])
 
         sql = """
         INSERT INTO peers(peer_uuid, display_name, ip, port, status, last_seen, created_at, updated_at)
-        VALUES (?, ?, ?, ?, 'ACTIVE', ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """
 
         with self._connect() as conn:
@@ -159,7 +208,7 @@ class ChatRepository:
             if self.get_peer_by_user_id(conn, user_id):
                 raise ValueError("Peer đã tồn tại: {}".format(user_id))
 
-            conn.execute(sql, (user_id, display_name, ip, port, now, now, now))
+            conn.execute(sql, (user_id, effective_display_name, ip, port, status, now, now, now))
             conn.commit()
 
             row = conn.execute(
@@ -174,8 +223,8 @@ class ChatRepository:
 
         return _row_to_dict(row)
 
-    # Cập nhật lại địa chỉ IP/port (khi người dùng đăng nhập lại và có sự thay đổi ip hay port)
-    def update_peer_address(self, user_id, ip, port, display_name=None, username=None):
+    # Cập nhật peer theo user_id (hỗ trợ cập nhật ip/port/status một phần)
+    def update_peer(self, user_id, ip=None, port=None, status=None):
         now = _utcnow_iso()
 
         with self._connect() as conn:
@@ -183,29 +232,27 @@ class ChatRepository:
                 raise ValueError("Peer chưa tồn tại cho user_id: {}".format(user_id))
 
             current_row = conn.execute(
-                "SELECT display_name FROM peers WHERE peer_uuid = ?",
+                "SELECT display_name, ip, port, status FROM peers WHERE peer_uuid = ?",
                 (user_id,),
             ).fetchone()
-            effective_display_name = display_name or current_row["display_name"]
 
-            self.update_user(conn, user_id, effective_display_name, username=username)
+            effective_ip = ip if ip is not None else current_row["ip"]
+            effective_port = int(port) if port is not None else int(current_row["port"])
+            effective_status = status if status is not None else current_row["status"]
 
             conn.execute(
                 """
                 UPDATE peers
                 SET
-                    display_name = ?,
                     ip = ?,
                     port = ?,
-                    status = 'ACTIVE',
+                    status = ?,
                     last_seen = ?,
                     updated_at = ?
                 WHERE peer_uuid = ?
                 """,
-                (effective_display_name, ip, port, now, now, user_id),
+                (effective_ip, effective_port, effective_status, now, now, user_id),
             )
-
-            # self._refresh_peer_connections_after_peer_update(conn, user_id)
 
             conn.commit()
             row = conn.execute(
@@ -245,6 +292,8 @@ class ChatRepository:
     """
     Truy vấn peer_connection
     - create_peer_connection: Tạo peer_connection khi có kết nối mới giữa 2 peer
+    - update_connection_status: Cập nhật trạng thái kết nối của một user
+    - update_connection_status_by_id: Cập nhật trạng thái một kết nối theo id
     """
 
     # Tạo peer_connection
@@ -277,6 +326,40 @@ class ChatRepository:
                 (from_user_id, to_user_id),
             ).fetchone()
         return _row_to_dict(row)
+    
+    # Cập nhật trạng thái các kết nối của một user
+    def update_connection_status(self, user_id, status):
+        with self._connect() as conn:
+            cur = conn.execute(
+                """
+                UPDATE peer_connections
+                SET status = ?
+                WHERE from_user_id = ? OR to_user_id = ?
+                """,
+                (status, user_id, user_id),
+            )
+            conn.commit()
+            return cur.rowcount
+
+    # Cập nhật trạng thái một kết nối theo id
+    def update_connection_status_by_id(self, connection_id, status):
+        with self._connect() as conn:
+            cur = conn.execute(
+                """
+                UPDATE peer_connections
+                SET status = ?
+                WHERE id = ?
+                """,
+                (status, connection_id),
+            )
+            conn.commit()
+
+            row = conn.execute(
+                "SELECT * FROM peer_connections WHERE id = ?",
+                (connection_id,),
+            ).fetchone()
+
+        return _row_to_dict(row), cur.rowcount
 
 
     """
@@ -558,7 +641,7 @@ class ChatRepository:
                     WHERE n.user_id = ? AND n.is_read = 0
                     ORDER BY n.id DESC
                     """,
-                    (user_id),
+                    (user_id,),
                 ).fetchall()
             else:
                 rows = conn.execute(
@@ -578,7 +661,7 @@ class ChatRepository:
                     WHERE n.user_id = ?
                     ORDER BY n.id DESC
                     """,
-                    (user_id),
+                    (user_id,),
                 ).fetchall()
 
         return [dict(r) for r in rows]

@@ -278,7 +278,7 @@ def login(headers="guest", body="anonymous"):
             if not verify_password(password, stored_hash):
                 return error_response("Invalid username or password", "AUTH_FAILED")
 
-        user_row, _ = repo.update_user_status(user_id, "ACTIVE")
+        user_row = repo.update_user_status(user_id, "ACTIVE")
 
         with repo._connect() as conn:
             peer_exists = repo.get_peer_by_user_id(conn, user_id)

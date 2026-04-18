@@ -22,6 +22,9 @@ app.sampleapp
 import hmac
 import hashlib
 import json
+import base64
+
+from collections.abc import Mapping
 
 from pathlib import Path
 from uuid import uuid4
@@ -63,6 +66,48 @@ def parse_json_body(body):
         return json.loads(raw)
     except json.JSONDecodeError:
         return None
+
+
+def get_header(headers, key, default=""):
+    if isinstance(headers, Mapping):
+        return headers.get(key, default)
+    return default
+
+
+def parse_basic_auth(headers):
+    raw_auth = str(get_header(headers, "authorization", "") or "")
+    if not raw_auth.lower().startswith("basic "):
+        return None, None
+
+    encoded = raw_auth.split(" ", 1)[1].strip()
+    if not encoded:
+        return None, None
+
+    try:
+        decoded = base64.b64decode(encoded).decode("utf-8")
+        if ":" not in decoded:
+            return None, None
+        username, password = decoded.split(":", 1)
+        return username, password
+    except Exception:
+        return None, None
+
+
+def extract_session_id(headers):
+    raw_cookie = str(get_header(headers, "cookie", "") or "")
+    if not raw_cookie:
+        return None
+
+    for pair in raw_cookie.split(";"):
+        part = pair.strip()
+        if not part or "=" not in part:
+            continue
+        k, v = part.split("=", 1)
+        if k.strip().lower() == "session_id":
+            value = v.strip()
+            return value if value else None
+
+    return None
     
 # Get repository instance from app
 def get_repo():
@@ -105,11 +150,11 @@ def require_fields(payload, names):
 def extract_client_ip(headers):
     ip = ""
 
-    if isinstance(headers, dict):
-        forwarded = headers.get("x-forwarded-for") or headers.get("X-Forwarded-For")
-        real_ip = headers.get("x-real-ip") or headers.get("X-Real-IP")
-        client_ip = headers.get("client-ip") or headers.get("Client-IP")
-        remote_addr = headers.get("remote-addr") or headers.get("Remote-Addr")
+    if isinstance(headers, Mapping):
+        forwarded = get_header(headers, "x-forwarded-for") or get_header(headers, "X-Forwarded-For")
+        real_ip = get_header(headers, "x-real-ip") or get_header(headers, "X-Real-IP")
+        client_ip = get_header(headers, "client-ip") or get_header(headers, "Client-IP")
+        remote_addr = get_header(headers, "remote-addr") or get_header(headers, "Remote-Addr")
 
         if forwarded:
             ip = str(forwarded).split(",")[0].strip()
@@ -167,12 +212,21 @@ def register(headers="guest", body="anonymous"):
     if payload is None:
         return error_response("Invalid JSON body", "INVALID_JSON")
 
-    err = require_fields(payload, ["username", "password", "port"])
+    username = str(payload.get("username", "")).strip()
+    password = str(payload.get("password", "") or "")
+
+    if not username or not password:
+        auth_username, auth_password = parse_basic_auth(headers)
+        username = username or str(auth_username or "").strip()
+        password = password or str(auth_password or "")
+
+    err = require_fields(
+        {"username": username, "password": password, "port": payload.get("port")},
+        ["username", "password", "port"],
+    )
     if err:
         return error_response(err, "VALIDATION_ERROR")
 
-    username = str(payload["username"]).strip()
-    password = str(payload["password"])
     display_name = str(payload.get("display_name", "")).strip() or username
     ip = extract_client_ip(headers)
     port = parse_port(payload["port"])
@@ -214,7 +268,8 @@ def register(headers="guest", body="anonymous"):
             status="ACTIVE",
         )
 
-        # TODO: cookie/session id
+        # TODO: Tao session va Set-Cookie thong qua Response/HttpAdapter.
+        # TODO: Hien tai hook trong daemon.httpadapter chua cung cap cach gan Set-Cookie tu app route.
         session_id = None
 
         return ok_response(
@@ -246,12 +301,21 @@ def login(headers="guest", body="anonymous"):
     if payload is None:
         return error_response("Invalid JSON body", "INVALID_JSON")
 
-    err = require_fields(payload, ["username", "password", "port"])
+    username = str(payload.get("username", "")).strip()
+    password = str(payload.get("password", "") or "")
+
+    if not username or not password:
+        auth_username, auth_password = parse_basic_auth(headers)
+        username = username or str(auth_username or "").strip()
+        password = password or str(auth_password or "")
+
+    err = require_fields(
+        {"username": username, "password": password, "port": payload.get("port")},
+        ["username", "password", "port"],
+    )
     if err:
         return error_response(err, "VALIDATION_ERROR")
 
-    username = str(payload["username"]).strip()
-    password = str(payload["password"])
     ip = extract_client_ip(headers)
     port = parse_port(payload["port"])
 
@@ -301,7 +365,8 @@ def login(headers="guest", body="anonymous"):
 
         updated_connections = repo.update_connection_status(user_id, "CONNECTED")
 
-        # TODO: issue session and Set-Cookie in HTTP response layer
+        # TODO: Tao session va Set-Cookie thong qua Response/HttpAdapter.
+        # TODO: Hien tai route chi nhan (headers, body), khong co doi tuong response de chen Set-Cookie.
         session_id = None
 
         return ok_response(
@@ -328,13 +393,23 @@ def logout(headers="guest", body="anonymous"):
     if payload is None:
         return error_response("Invalid JSON body", "INVALID_JSON")
 
-    err = require_fields(payload, ["username"])
-    if err:
-        return error_response(err, "VALIDATION_ERROR")
+    username = str(payload.get("username", "")).strip()
 
-    username = str(payload["username"]).strip()
+    # Ho tro logout bang cookie session id sau khi daemon da parse Cookie header.
+    session_id = extract_session_id(headers)
+
     if not username:
-        return error_response("username must not be empty", "VALIDATION_ERROR")
+        auth_username, _ = parse_basic_auth(headers)
+        username = str(auth_username or "").strip()
+
+    if not username and not session_id:
+        return error_response("username or session_id is required", "VALIDATION_ERROR")
+
+    # TODO: Neu co session_id thi map session -> user tai subsystem auth/session rieng.
+    # TODO: Vi chua duoc sua cac file daemon/auth khac, tam thoi logout theo username.
+
+    if not username:
+        return error_response("username is required until session mapping is implemented", "VALIDATION_ERROR")
 
     repo = get_repo()
 
@@ -358,7 +433,8 @@ def logout(headers="guest", body="anonymous"):
 
         updated_connections = repo.update_connection_status(user_id, "DISCONNECTED")
 
-        # TODO: invalidate session or clear cookie
+        # TODO: Invalidate session va clear cookie qua Response/HttpAdapter.
+        # TODO: Hien tai chua co duong truyen Set-Cookie tu route den response framework.
 
         return ok_response(
             data={
@@ -685,7 +761,8 @@ def send_direct_message(headers="guest", body="anonymous"):
         if sender_active and target_active:
             delivery_mode = "realtime_and_stored"
             realtime_status = "pending_network_integration"
-            # TODO: Gửi tin nhắn P2P
+            # TODO: Goi module network/daemon de gui realtime non-blocking (callback/coroutine).
+            # TODO: Khong sua file daemon theo pham vi phan cong, nen de cho noi sau.
             
         else:
             realtime_status = "target_or_sender_inactive"

@@ -67,13 +67,13 @@ def parse_json_body(body):
     except json.JSONDecodeError:
         return None
 
-
+# Get header value from headers
 def get_header(headers, key, default=""):
     if isinstance(headers, Mapping):
         return headers.get(key, default)
     return default
 
-
+# Parse Basic Auth header and return username/password
 def parse_basic_auth(headers):
     raw_auth = str(get_header(headers, "authorization", "") or "")
     if not raw_auth.lower().startswith("basic "):
@@ -92,7 +92,7 @@ def parse_basic_auth(headers):
     except Exception:
         return None, None
 
-
+# Extract session_id from Cookie
 def extract_session_id(headers):
     raw_cookie = str(get_header(headers, "cookie", "") or "")
     if not raw_cookie:

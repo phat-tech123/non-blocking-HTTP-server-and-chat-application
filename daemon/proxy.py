@@ -29,6 +29,7 @@ Requirement:
 """
 import socket
 import threading
+import time
 from .response import *
 from .httpadapter import HttpAdapter
 from .dictionary import CaseInsensitiveDict
@@ -59,12 +60,36 @@ def forward_request(host, port, request):
     try:
         backend.connect((host, port))
         backend.sendall(request.encode())
+        
+        # Ép socket nối với backend thành non-blocking
+        backend.setblocking(False)
         response = b""
+        start_time = time.time()
+        backend_timeout = 10.0 # Chờ backend lâu hơn client một chút
+
         while True:
-            chunk = backend.recv(4096)
-            if not chunk:
+            if time.time() - start_time > backend_timeout:
+                print("[Proxy] Timeout: Backend phản hồi quá chậm.")
                 break
-            response += chunk
+            try:
+                chunk = backend.recv(4096)
+                if not chunk:
+                    break
+                response += chunk
+                start_time = time.time()
+                
+                # Giải pháp: Nếu Backend trả về chunk nhỏ hơn 4096 (buffer chưa đầy)
+                # Hoặc chuỗi có chứa ký tự kết thúc HTTP, ta có thể ngắt sớm để không bị vòng lặp vô hạn
+                if len(chunk) < 4096:
+                    break
+                    
+            except BlockingIOError:
+                time.sleep(0.01)
+                continue
+            except socket.error as e:
+                print(f"[Proxy] Lỗi nhận từ Backend: {e}")
+                break
+                
         return response
     except socket.error as e:
       print("Socket error: {}".format(e))
@@ -105,7 +130,7 @@ def resolve_routing_policy(hostname, routes):
             # Use a dummy host to raise an invalid connection
             proxy_host = '127.0.0.1'
             proxy_port = '9000'
-        elif len(value) == 1:
+        elif len(proxy_map) == 1: # Đã fix lỗi biến 'value' không tồn tại thành 'proxy_map'
             proxy_host, proxy_port = proxy_map[0].split(":", 2)
         #elif: # apply the policy handling 
         #   proxy_map
@@ -139,7 +164,40 @@ def handle_client(ip, port, conn, addr, routes):
     :params routes (dict): dictionary mapping hostnames and location.
     """
 
-    request = conn.recv(1024).decode()
+    # Chuyển socket sang non-blocking
+    conn.setblocking(False)
+    raw_data = b""
+    timeout = 5.0
+    start_time = time.time()
+
+    while True:
+        if time.time() - start_time > timeout:
+            print("[Proxy] Timeout: Client gửi dữ liệu quá chậm.")
+            break
+        try:
+            chunk = conn.recv(4096)
+            if not chunk: break
+            raw_data += chunk
+            start_time = time.time()
+            
+            #if len(chunk) < 4096: break
+            if b"\r\n\r\n" in raw_data or b"\n\n" in raw_data:
+                break
+
+        except BlockingIOError:
+            time.sleep(0.01)
+            continue
+        except socket.error as e:
+            print(f"[Proxy] Lỗi đọc socket: {e}")
+            break
+
+    # Lọc chuỗi trống/rác để tránh lỗi vỡ Request parse
+    if not raw_data.strip():
+        conn.close()
+        return
+
+    request = raw_data.decode("utf-8", errors="ignore")
+    hostname = ""
 
     # Extract hostname
     for line in request.splitlines():
@@ -168,14 +226,23 @@ def handle_client(ip, port, conn, addr, routes):
             "\r\n"
             "404 Not Found"
         ).encode('utf-8')
-    conn.sendall(response)
+        
+    # Gửi lại dữ liệu cho client an toàn qua khối try-except
+    if response:
+        try:
+            conn.sendall(response)
+        except BlockingIOError:
+            pass
+        except socket.error as e:
+            print(f"[Proxy] Lỗi khi gửi dữ liệu cho client: {e}")
+            
     conn.close()
 
 def run_proxy(ip, port, routes):
     """
     Starts the proxy server and listens for incoming connections. 
 
-    The process dinds the proxy server to the specified IP and port.
+    The process binds the proxy server to the specified IP and port.
     In each incomping connection, it accepts the connections and
     spawns a new thread for each client using `handle_client`.
  
@@ -189,9 +256,13 @@ def run_proxy(ip, port, routes):
     proxy = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 
     try:
+        # Chống lỗi kẹt Port (Address already in use) khi tắt mở server liên tục
+        proxy.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        
         proxy.bind((ip, port))
         proxy.listen(50)
         print("[Proxy] Listening on IP {} port {}".format(ip,port))
+        
         while True:
             conn, addr = proxy.accept()
             #
@@ -199,6 +270,14 @@ def run_proxy(ip, port, routes):
             #        using multi-thread programming with the
             #        provided handle_client routine
             #
+            # Baseline multi-thread implementation
+            client_thread = threading.Thread(
+                target=handle_client,
+                args=(ip, port, conn, addr, routes)
+            )
+            client_thread.daemon = True
+            client_thread.start()
+            
     except socket.error as e:
       print("Socket error: {}".format(e))
 

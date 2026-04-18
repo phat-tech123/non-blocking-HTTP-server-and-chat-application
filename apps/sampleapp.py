@@ -108,7 +108,7 @@ def extract_session_id(headers):
             return value if value else None
 
     return None
-    
+ 
 # Get repository instance from app
 def get_repo():
     repo = app.get_state("repository")
@@ -268,8 +268,7 @@ def register(headers="guest", body="anonymous"):
             status="ACTIVE",
         )
 
-        # TODO: Tao session va Set-Cookie thong qua Response/HttpAdapter.
-        # TODO: Hien tai hook trong daemon.httpadapter chua cung cap cach gan Set-Cookie tu app route.
+        # TODO(daemon-auth): Issue session id and Set-Cookie via daemon response layer.
         session_id = None
 
         return ok_response(
@@ -278,6 +277,7 @@ def register(headers="guest", body="anonymous"):
                 "username": username,
                 "peer": peer,
                 "session_id": session_id,
+                "auth_integration": "pending_daemon_session_cookie",
             },
             message="Register successful"
         )
@@ -365,8 +365,7 @@ def login(headers="guest", body="anonymous"):
 
         updated_connections = repo.update_connection_status(user_id, "CONNECTED")
 
-        # TODO: Tao session va Set-Cookie thong qua Response/HttpAdapter.
-        # TODO: Hien tai route chi nhan (headers, body), khong co doi tuong response de chen Set-Cookie.
+        # TODO(daemon-auth): Rotate/create session and emit Set-Cookie in daemon response.
         session_id = None
 
         return ok_response(
@@ -377,6 +376,7 @@ def login(headers="guest", body="anonymous"):
                 "peer": peer,
                 "connections_updated": updated_connections,
                 "session_id": session_id,
+                "auth_integration": "pending_daemon_session_cookie",
             },
             message="Login successful"
         )
@@ -405,11 +405,16 @@ def logout(headers="guest", body="anonymous"):
     if not username and not session_id:
         return error_response("username or session_id is required", "VALIDATION_ERROR")
 
-    # TODO: Neu co session_id thi map session -> user tai subsystem auth/session rieng.
-    # TODO: Vi chua duoc sua cac file daemon/auth khac, tam thoi logout theo username.
+    # TODO(daemon-auth): Resolve session_id -> user via daemon session subsystem when available.
+    if not username:
+        if session_id:
+            return error_response(
+                "Session-based logout is pending daemon session mapping",
+                "TODO_DAEMON_SESSION_MAPPING",
+            )
 
     if not username:
-        return error_response("username is required until session mapping is implemented", "VALIDATION_ERROR")
+        return error_response("username is required", "VALIDATION_ERROR")
 
     repo = get_repo()
 
@@ -433,12 +438,14 @@ def logout(headers="guest", body="anonymous"):
 
         updated_connections = repo.update_connection_status(user_id, "DISCONNECTED")
 
-        # TODO: Invalidate session va clear cookie qua Response/HttpAdapter.
-        # TODO: Hien tai chua co duong truyen Set-Cookie tu route den response framework.
+        # TODO(daemon-auth): Invalidate session and clear cookie at daemon response layer.
+        invalidated = False
 
         return ok_response(
             data={
                 "connections_updated": updated_connections,
+                "session_invalidated": invalidated,
+                "auth_integration": "pending_daemon_session_cookie",
             },
             message="Logout successful"
         )
@@ -482,10 +489,24 @@ def connect_peer(headers="guest", body="anonymous"):
     try:
         connection = repo.create_peer_connection(from_peer_id, to_peer_id, status="CONNECTED")
 
-        # TODO: Thực hiện kết nối
+        to_peer = repo.get_peer_detail_by_id(to_peer_id)
+        connect_runtime = {
+            "attempted": False,
+            "ok": False,
+            "reason": "pending_daemon_peer_socket_bridge",
+        }
+
+        if to_peer is None:
+            connect_runtime["reason"] = "target_peer_not_found"
+
+        # TODO(daemon-nonblocking): Execute actual peer handshake via daemon mechanism
+        # (threading/callback/coroutine) instead of app-managed socket operations.
 
         return ok_response(
-            data={"connection": connection},
+            data={
+                "connection": connection,
+                "runtime_connect": connect_runtime,
+            },
             message="Peer connection created"
         )
     except ValueError as ex:
@@ -599,10 +620,10 @@ def create_channel(headers="guest", body="anonymous"):
             access_policy=access_policy,
         )
 
-        # TODO:
+        # TODO(daemon-realtime): Trigger owner/channel realtime event via daemon bridge.
 
         return ok_response(
-            data={"channel": channel},
+            data={"channel": channel, "runtime_event": "pending_daemon_realtime_bridge"},
             message="Channel created"
         )
     except Exception as ex:
@@ -758,11 +779,19 @@ def send_direct_message(headers="guest", body="anonymous"):
 
         delivery_mode = "stored_only"
         realtime_status = "not_applicable"
+        realtime_detail = {"attempted": False, "ok": False, "reason": "not_attempted"}
         if sender_active and target_active:
             delivery_mode = "realtime_and_stored"
-            realtime_status = "pending_network_integration"
-            # TODO: Goi module network/daemon de gui realtime non-blocking (callback/coroutine).
-            # TODO: Khong sua file daemon theo pham vi phan cong, nen de cho noi sau.
+            realtime_detail = {
+                "attempted": False,
+                "ok": False,
+                "reason": "pending_daemon_peer_socket_bridge",
+                "target_ip": target_peer["ip"],
+                "target_port": target_peer["port"],
+            }
+            # TODO(daemon-nonblocking): Push DIRECT payload by daemon non-blocking
+            # runtime bridge (threading/callback/coroutine) for live P2P session.
+            realtime_status = "pending_daemon_realtime_bridge"
             
         else:
             realtime_status = "target_or_sender_inactive"
@@ -772,6 +801,7 @@ def send_direct_message(headers="guest", body="anonymous"):
                 "message": message,
                 "delivery_mode": delivery_mode,
                 "realtime_status": realtime_status,
+                "realtime_detail": realtime_detail,
                 "sender_active": sender_active,
                 "target_active": target_active,
             },

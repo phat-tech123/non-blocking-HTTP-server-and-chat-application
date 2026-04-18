@@ -73,6 +73,7 @@ class Request():
         #: Hook point for routed mapped-path
         self.hook = None
         #: Authentication tuple (username, password)
+        # LỖI 4 FIX: Khai báo biến self.auth để chuẩn hóa OOP
         self.auth = None
 
     def extract_request_line(self, request):
@@ -98,7 +99,8 @@ class Request():
             return method, path, version
         except Exception as e:
             print(f"[Request Error] extract_request_line: {e}")
-            raise ValueError("not enough values to unpack")
+            # LỖI 2 FIX: Trả về đủ 3 giá trị None để không bị ValueError unpack
+            return None, None, None
              
     def prepare_headers(self, raw_headers):
         """Prepares the given HTTP headers."""
@@ -125,20 +127,27 @@ class Request():
     def prepare(self, request, routes=None):
         """Prepares the entire request with the given parameters."""
 
-        # 1. Prepare the request line from the request header
+        # Prepare the request line from the request header
         print("[Request] prepare request msg:\n{}".format(request.splitlines()[0] if request else "EMPTY"))
+        
+        # Split header and body
+        raw_headers, raw_body = self.fetch_headers_body(request)
+        self._raw_headers = raw_headers
+        self._raw_body = raw_body
+
+        # Extract request line
         self.method, self.path, self.version = self.extract_request_line(request)
         print("[Request] {} path {} version {}".format(self.method, self.path, self.version))
 
-        # 2. Tách Header và Body
-        self._raw_headers, self._raw_body = self.fetch_headers_body(request)
-        
-        # 3. Phân tích Headers và nạp vào CaseInsensitiveDict (Sửa lỗi NoneType)
+        # Prepare headers
         header_dict = self.prepare_headers(self._raw_headers)
         self.headers = CaseInsensitiveDict(header_dict)
-
-        # 4. Gán Body
+        
+        # Gán Body
         self.body = self._raw_body
+
+        self.cookies = self.parse_cookies(self.headers.get('cookie', ''))
+        self.prepare_auth()
 
         # @bksysnet Preapring the webapp hook with AsynapRous instance
         # The default behaviour with HTTP server is empty routed
@@ -147,33 +156,20 @@ class Request():
             print("[Request] Routing METHOD {} path {}".format(self.method, self.path))
             self.hook = routes.get((self.method, self.path))
             print("[Request] Hook mapped for request")
-
-        # 5. Phân tích Cookie (RFC 6265)
-        raw_cookie = self.headers.get('cookie', '')
-        if raw_cookie:
-            # Tách các cặp cookie cách nhau bằng dấu chấm phẩy
-            cookie_pairs = raw_cookie.split(';')
-            for pair in cookie_pairs:
-                if '=' in pair:
-                    k, v = pair.strip().split('=', 1)
-                    self.cookies[k] = v
-
-        # 6. Phân tích Authentication (RFC 2617 - Basic Auth)
-        raw_auth = self.headers.get('authorization', '')
-        if raw_auth.lower().startswith('basic '):
-            # Lấy phần chuỗi đã mã hóa Base64 phía sau chữ "Basic "
-            encoded_str = raw_auth.split(' ', 1)[1]
-            try:
-                # Giải mã Base64 ra chuỗi "user:pass"
-                decoded_str = base64.b64decode(encoded_str).decode('utf-8')
-                if ':' in decoded_str:
-                    username, password = decoded_str.split(':', 1)
-                    self.auth = (username, password)
-                    print(f"[Request] Basic Auth decoded for user: {username}")
-            except Exception as e:
-                print(f"[Request] Error decoding Basic Auth: {e}")
-
+            
         return
+    
+    def parse_cookies(self, cookie_header):
+        cookies = {}
+        if not cookie_header:
+            return cookies
+
+        pairs = cookie_header.split(";")
+        for pair in pairs:
+            if "=" in pair:
+                key, value = pair.strip().split("=", 1)
+                cookies[key] = value
+        return cookies
 
     def prepare_body(self, data, files=None, json=None):
         self.body = data
@@ -182,24 +178,26 @@ class Request():
 
     def prepare_content_length(self, body):
         if body:
-            # Nếu body là string, tính len encode utf-8. Nếu là bytes, tính trực tiếp.
+            # LỖI 3 FIX: Đếm dung lượng Bytes thay vì đếm số ký tự (len of chars)
             length = len(body.encode('utf-8')) if isinstance(body, str) else len(body)
             self.headers["Content-Length"] = str(length)
         else:
             self.headers["Content-Length"] = "0"
         return
 
-    def prepare_auth(self, auth, url=""):
-        """Dùng cho Proxy/Client: Đóng gói user/pass thành header Basic Auth"""
-        if isinstance(auth, tuple) and len(auth) == 2:
-            credential = f"{auth[0]}:{auth[1]}"
-            encoded_credential = base64.b64encode(credential.encode('utf-8')).decode('utf-8')
-            self.headers["Authorization"] = f"Basic {encoded_credential}"
-            self.auth = auth
+    # LỖI 1 FIX: Thêm tham số mặc định auth=None để chống văng lỗi TypeError
+    def prepare_auth(self, auth=None, url=""):
+        auth_header = self.headers.get('Authorization')
+        if auth_header and auth_header.startswith('Basic '):
+            try:
+                encoded_credentials = auth_header.split(' ', 1)[1]
+                decoded = base64.b64decode(encoded_credentials).decode('utf-8')
+                if ':' in decoded:
+                    user, pwd = decoded.split(':', 1)
+                    self.auth = {'username': user, 'password': pwd}
+            except Exception:
+                self.auth = None
         return
 
     def prepare_cookies(self, cookies):
-        """Đóng gói Dict cookie thành chuỗi header hợp lệ"""
-        if isinstance(cookies, dict) and cookies:
-            cookie_str = "; ".join([f"{k}={v}" for k, v in cookies.items()])
-            self.headers["Cookie"] = cookie_str
+        self.headers["Cookie"] = cookies

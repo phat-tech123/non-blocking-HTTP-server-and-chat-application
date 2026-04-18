@@ -108,51 +108,48 @@ class HttpAdapter:
         # Handle the request
         #msg = conn.recv(1024).decode()
         #----------------------------------------------------------------------------------------------------
-        # Chuyển socket riêng của client này sang non-blocking
+        # non-blocking
         conn.setblocking(False)
         
         raw_data = b""
         import time
-        timeout = 5.0  # Chờ tối đa 5s, nếu client không gửi data thì cắt để bảo vệ server
+        timeout = 5.0 
         start_time = time.time()
 
         while True:
-            # 1. Cơ chế Timeout chống kẹt luồng (chống Slowloris Attack)
+            # 1. against Slowloris Attack
             if time.time() - start_time > timeout:
                 print("[HttpAdapter] Timeout: Client send data too slow.")
                 break
                 
             try:
-                # 2. Cố gắng đọc dữ liệu
+                # 2. try to read data
                 chunk = conn.recv(4096)
                 
                 if not chunk:
-                    # Client chủ động đóng kết nối (gửi cờ FIN)
                     break
                     
                 raw_data += chunk
-                start_time = time.time() # Reset lại đồng hồ báo thức khi có data mới
+                start_time = time.time() 
                 
-                # 3. Điều kiện dừng: Nếu lượng data nhận được nhỏ hơn buffer, 
-                # khả năng cao là đã đọc hết gói tin request trong buffer của hệ điều hành.
+                # 3. last request 
                 if len(chunk) < 4096:
                     break
                     
             except BlockingIOError:
-                # 4. TRỌNG TÂM: Lỗi này văng ra khi buffer trống (chưa có data).
-                # Thay vì treo, ta cho Thread nghỉ ngơi 0.01s (để không ngốn 100% CPU) rồi lặp lại.
+                # 4. buffer is empty
                 time.sleep(0.01)
                 continue
             except socket.error as e:
-                print(f"[HttpAdapter] Lỗi socket khi đọc: {e}")
+                print(f"[HttpAdapter] socket error: {e}")
                 break
             
             if not raw_data.strip():
-                print("[HttpAdapter] Không có dữ liệu, ngắt kết nối để bảo vệ server.")
+                print("[HttpAdapter] no data, disconnect.")
                 conn.close()
-                return # Dừng hàm tại đây luôn, không gọi req.prepare() nữa
+                return 
 
-        # Decode dữ liệu thô ra dạng chuỗi
+        # Decode raw data into string
         msg = raw_data.decode("utf-8", errors="ignore")
         #----------------------------------------------------------------------------------------------------
 
@@ -360,7 +357,13 @@ class HttpAdapter:
         #
         username, password = ("user1", "password")
 
-        if username:
-            headers["Proxy-Authorization"] = (username, password)
+        if username and password:
+            #headers["Proxy-Authorization"] = (username, password)
+            import base64
+            credential = f"{username}:{password}"
+            
+            encoded_credential = base64.b64encode(credential.encode('utf-8')).decode('utf-8')
+            
+            headers["Proxy-Authorization"] = f"Basic {encoded_credential}"
 
         return headers

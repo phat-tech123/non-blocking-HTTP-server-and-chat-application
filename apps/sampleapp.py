@@ -173,7 +173,7 @@ def invalidate_session(session_id):
     sessions = get_session_store()
     return sessions.pop(session_id, None) is not None
 
-# Get or initialize stream runtime state used by persistent P2P sockets.
+# Get or initialize stream runtime state used by persistent P2P sockets
 def get_stream_runtime():
     runtime = app.get_state("stream_runtime")
     if runtime is None:
@@ -188,11 +188,11 @@ def get_stream_runtime():
         app.set_state("stream_runtime", runtime)
     return runtime
 
-# Build a unique key for one directional stream connection.
+# Build a unique key for one directional stream connection
 def stream_key(from_peer_id, to_peer_id):
     return "{}->{}".format(int(from_peer_id), int(to_peer_id))
 
-# Safely close a socket and ignore close errors.
+# Safely close a socket and ignore close errors
 def close_socket_quietly(sock):
     if sock is None:
         return
@@ -201,13 +201,16 @@ def close_socket_quietly(sock):
     except Exception:
         pass
 
-# Encode one stream packet as a newline-delimited JSON frame.
+# Encode one stream packet as a newline-delimited JSON frame
 def encode_stream_packet(packet):
     return (json.dumps(packet) + "\n").encode("utf-8")
 
-# Read a full JSON frame line from stream socket.
+# Read a full JSON frame line from stream socket
 def recv_stream_line(sock, timeout=2.0, max_bytes=65536):
-    sock.settimeout(float(timeout))
+    if timeout is None:
+        sock.settimeout(None)
+    else:
+        sock.settimeout(float(timeout))
     data = bytearray()
     while len(data) < max_bytes:
         chunk = sock.recv(1)
@@ -220,7 +223,7 @@ def recv_stream_line(sock, timeout=2.0, max_bytes=65536):
         return None
     return data.decode("utf-8", errors="ignore").strip()
 
-# Send one JSON packet to stream peer and optionally wait for ack.
+# Send 1 JSON packet to stream peer and wait for ack
 def send_stream_packet(sock, packet, wait_ack=True, ack_timeout=1.5):
     try:
         sock.sendall(encode_stream_packet(packet))
@@ -239,36 +242,46 @@ def send_stream_packet(sock, packet, wait_ack=True, ack_timeout=1.5):
     except Exception:
         return False, None
 
-# Handle one inbound stream client and push accepted events to runtime inbox.
+# Handle one inbound stream client and keep processing frames while socket is open
 def handle_stream_client(conn, addr):
     try:
-        line = recv_stream_line(conn, timeout=30.0)
-        if not line:
-            return
+        while True:
+            line = recv_stream_line(conn, timeout=None)
+            if not line:
+                break
 
-        packet = json.loads(line)
-        runtime = get_stream_runtime()
-        with runtime["lock"]:
-            runtime["inbox"].append(
-                {
-                    "event_type": str(packet.get("event_type", "unknown")),
-                    "payload": packet.get("payload", {}),
-                    "received_at": int(time.time()),
-                    "from_ip": addr[0] if isinstance(addr, tuple) and addr else "",
-                }
-            )
+            try:
+                packet = json.loads(line)
+            except Exception:
+                try:
+                    conn.sendall(encode_stream_packet({"ok": False, "reason": "invalid_packet"}))
+                except Exception:
+                    break
+                continue
 
-        ack_packet = {"ok": True, "event_type": packet.get("event_type", "unknown"), "received_at": int(time.time())}
-        conn.sendall(encode_stream_packet(ack_packet))
+            runtime = get_stream_runtime()
+            with runtime["lock"]:
+                runtime["inbox"].append(
+                    {
+                        "event_type": str(packet.get("event_type", "unknown")),
+                        "payload": packet.get("payload", {}),
+                        "received_at": int(time.time()),
+                        "from_ip": addr[0] if isinstance(addr, tuple) and addr else "",
+                    }
+                )
+
+            ack_packet = {
+                "ok": True,
+                "event_type": packet.get("event_type", "unknown"),
+                "received_at": int(time.time()),
+            }
+            conn.sendall(encode_stream_packet(ack_packet))
     except Exception:
-        try:
-            conn.sendall(encode_stream_packet({"ok": False, "reason": "invalid_packet"}))
-        except Exception:
-            pass
+        pass
     finally:
         close_socket_quietly(conn)
 
-# Run listener loop that accepts inbound stream sockets.
+# Run listener loop that accepts inbound stream sockets
 def stream_listener_loop(listener_sock):
     while True:
         try:
@@ -278,7 +291,7 @@ def stream_listener_loop(listener_sock):
         except Exception:
             break
 
-# Ensure stream listener is running on provided endpoint.
+# Ensure stream listener is running on provided endpoint
 def ensure_stream_listener(ip, port):
     runtime = get_stream_runtime()
     try:
@@ -311,7 +324,7 @@ def ensure_stream_listener(ip, port):
 
     return {"ok": True, "reason": "started", "addr": (str(ip), int(port))}
 
-# Establish and keep one persistent stream socket from source peer to target peer.
+# Establish and keep one persistent stream socket from source peer to target peer
 def establish_stream_connection(from_peer, to_peer, timeout=2.0):
     if from_peer is None or to_peer is None:
         return {"attempted": False, "ok": False, "reason": "peer_not_found"}
@@ -362,7 +375,7 @@ def establish_stream_connection(from_peer, to_peer, timeout=2.0):
         close_socket_quietly(sock)
         return {"attempted": True, "ok": False, "reason": "socket_error", "error": str(ex)}
 
-# Send direct message packet via existing persistent stream connection.
+# Send direct message packet via existing persistent stream connection
 def send_direct_via_stream(sender_peer, target_peer, message):
     if sender_peer is None or target_peer is None:
         return {"attempted": False, "ok": False, "reason": "peer_not_found"}
@@ -396,7 +409,7 @@ def send_direct_via_stream(sender_peer, target_peer, message):
         close_socket_quietly(stale.get("socket"))
     return {"attempted": True, "ok": False, "reason": "stream_send_failed"}
 
-# Reconnect stream sockets for active historical connections of a logged-in user.
+# Reconnect stream sockets for active historical connections of a logged-in user
 def reconnect_stream_connections_for_user(repo, user_id):
     peer_self = repo.get_peer_detail_by_user_id(user_id)
     if peer_self is None:
@@ -419,7 +432,7 @@ def reconnect_stream_connections_for_user(repo, user_id):
 
     return results
 
-# Close all stream sockets associated with one user and drop them from runtime pool.
+# Close all stream sockets associated with one user and drop them from runtime pool
 def close_stream_connections_for_user(repo, user_id):
     peer_self = repo.get_peer_detail_by_user_id(user_id)
     if peer_self is None:
@@ -737,7 +750,6 @@ def logout(headers="guest", body="anonymous"):
 
     username = str(payload.get("username", "")).strip()
 
-    # Ho tro logout bang cookie session id sau khi daemon da parse Cookie header.
     session_id = extract_session_id(headers)
 
     if not username:
@@ -1189,7 +1201,6 @@ def send_direct_message(headers="guest", body="anonymous"):
             target_user_id=target_user_id,
         )
 
-        # Luon tao notification de peer dich doc lai khi login/vao channel sau
         repo.create_notification(target_peer_id, target_user_id, message["id"])
 
         delivery_mode = "stored_only"

@@ -26,6 +26,7 @@ from .dictionary import CaseInsensitiveDict
 
 import asyncio
 import inspect
+import socket
 
 class HttpAdapter:
     """
@@ -162,15 +163,51 @@ class HttpAdapter:
             conn.close()
             return
 
+        # Ensure app handlers can infer client source IP if no proxy header is present.
+        if isinstance(addr, tuple) and len(addr) > 0 and addr[0]:
+            req.headers.setdefault("Remote-Addr", str(addr[0]))
+
         print("[HttpAdapter] Invoke handle_client connection {}".format(addr))
 
         # Handle request hook
         if req.hook:
             # Chạy hàm chức năng (App Hook) tương ứng với Route
             # (Phần này Thành viên 3 và 4 sẽ viết logic bên trong hook)
-            hook_data = req.hook(headers=req.headers, body=req.body)
-            # Tạm gọi hàm build_response theo thiết kế của Framework
-            response_bytes = resp.build_response(req)
+            if inspect.iscoroutinefunction(req.hook):
+                hook_data = asyncio.run(req.hook(headers=req.headers, body=req.body))
+            else:
+                hook_data = req.hook(headers=req.headers, body=req.body)
+
+            resp.headers["Content-Type"] = "application/json"
+
+            if isinstance(hook_data, dict) and "body" in hook_data:
+                body = hook_data.get("body", b"")
+                status_code = hook_data.get("status_code", 200)
+                reason = hook_data.get("reason", "OK")
+                headers = hook_data.get("headers", {})
+                cookies = hook_data.get("cookies", {})
+
+                try:
+                    resp.status_code = int(status_code)
+                except (TypeError, ValueError):
+                    resp.status_code = 200
+
+                if reason:
+                    resp.reason = str(reason)
+
+                if isinstance(headers, dict):
+                    for key, value in headers.items():
+                        if key:
+                            resp.headers[str(key)] = str(value)
+
+                if isinstance(cookies, dict):
+                    for key, value in cookies.items():
+                        if key:
+                            resp.cookies[str(key)] = str(value)
+
+                response_bytes = resp.build_response(req, envelop_content=body)
+            else:
+                response_bytes = resp.build_response(req, envelop_content=hook_data)
         else:
             # Nếu không khớp route nào, build response mặc định (VD: 404 Not Found)
             response_bytes = resp.build_response(req)
@@ -229,8 +266,7 @@ class HttpAdapter:
         writer.write(response)
         await writer.drain()
 
-    @property
-    def extract_cookies(self, req, resp):
+    def extract_cookies(self, req, resp=None):
         """
         Build cookies from the :class:`Request <Request>` headers.
 
@@ -239,12 +275,18 @@ class HttpAdapter:
         :rtype: cookies - A dictionary of cookie key-value pairs.
         """
         cookies = {}
-        for header in headers:
-            if header.startswith("Cookie:"):
-                cookie_str = header.split(":", 1)[1].strip()
-                for pair in cookie_str.split(";"):
-                    key, value = pair.strip().split("=")
-                    cookies[key] = value
+        headers = getattr(req, "headers", {}) or {}
+        raw_cookie = ""
+        if isinstance(headers, dict):
+            raw_cookie = headers.get("Cookie", headers.get("cookie", ""))
+
+        if raw_cookie:
+            for pair in str(raw_cookie).split(";"):
+                item = pair.strip()
+                if not item or "=" not in item:
+                    continue
+                key, value = item.split("=", 1)
+                cookies[key.strip()] = value.strip()
         return cookies
 
     def build_response(self, req, resp):
@@ -257,7 +299,7 @@ class HttpAdapter:
         response = Response()
 
         # Set encoding.
-        response.encoding = get_encoding_from_headers(response.headers)
+        response.encoding = "utf-8"
         response.raw = resp
         response.reason = response.raw.reason
 
@@ -267,7 +309,7 @@ class HttpAdapter:
             response.url = req.url
 
         # Add new cookies from the server.
-        response.cookies = extract_cookies(req)
+        response.cookies = self.extract_cookies(req)
 
         # Give the Response some context.
         response.request = req

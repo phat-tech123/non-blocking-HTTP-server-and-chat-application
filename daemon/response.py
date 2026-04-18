@@ -236,10 +236,15 @@ class Response():
         headers = {
             "Date": datetime.datetime.utcnow().strftime("%a, %d %b %Y %H:%M:%S GMT"),
             "Server": "AsynapRous-Custom-Server",
-            "Content-Type": self.headers.get('Content-Type', 'text/html'),
-            "Content-Length": str(len(self._content or b"")),
-            "Connection": "close"
+            "Connection": "close",
         }
+
+        if isinstance(self.headers, dict):
+            for key, value in self.headers.items():
+                headers[str(key)] = str(value)
+
+        headers.setdefault("Content-Type", "text/html")
+        headers["Content-Length"] = str(len(self._content or b""))
 
         header_lines = ""
         for key, value in headers.items():

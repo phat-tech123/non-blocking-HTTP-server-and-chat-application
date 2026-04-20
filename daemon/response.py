@@ -237,6 +237,9 @@ class Response():
             "Date": datetime.datetime.utcnow().strftime("%a, %d %b %Y %H:%M:%S GMT"),
             "Server": "AsynapRous-Custom-Server",
             "Connection": "close",
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "POST, GET, PUT, OPTIONS, DELETE",
+            "Access-Control-Allow-Headers": "Content-Type, Authorization, Cookie",
         }
 
         if isinstance(self.headers, dict):
@@ -251,7 +254,7 @@ class Response():
             header_lines += f"{key}: {value}\r\n"
         if self.cookies:
             for key, value in self.cookies.items():
-                header_lines += f"Set-Cookie: {key}={value}; Path=/; HttpOnly\r\n"
+                header_lines += f"Set-Cookie: {key}={value}; Path=/; HttpOnly; SameSite=Lax\r\n"
         
         full_header = status_line + header_lines + "\r\n"
 

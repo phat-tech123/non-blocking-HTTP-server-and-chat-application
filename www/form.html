@@ -2,53 +2,156 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <title>Simple RESTful HTTP form</title>
+  <title>API Tester - BKSYSNET</title>
+  
+  <style>
+    
+    body {
+      background-color: #f4f7f6;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      min-height: 100vh;
+      margin: 0;
+    }
+
+    
+    .test-container {
+      width: 700px; 
+      padding: 50px;
+      background: #ffffff;
+      border-radius: 20px;
+      box-shadow: 0 15px 40px rgba(0,0,0,0.1);
+      box-sizing: border-box; 
+    }
+
+    h2 { 
+      color: #38488f; 
+      text-align: center; 
+      margin-bottom: 40px; 
+      font-size: 32px;
+      font-weight: 700;
+    }
+    
+    .input-group { margin-bottom: 30px; }
+    
+    label { 
+      display: block; 
+      margin-bottom: 12px; 
+      font-weight: 600; 
+      color: #444; 
+      font-size: 16px;
+    }
+    
+    input[type="text"] {
+      width: 100%;
+      padding: 18px; 
+      border: 2px solid #e0e6ed;
+      border-radius: 12px;
+      box-sizing: border-box; 
+      font-size: 16px;
+      transition: all 0.3s;
+    }
+    input[type="text"]:focus { 
+      border-color: #38488f; 
+      outline: none; 
+      box-shadow: 0 0 10px rgba(56, 72, 143, 0.1);
+    }
+
+    
+    .button-grid { 
+      display: flex; 
+      gap: 15px; 
+      margin-top: 20px; 
+    }
+    
+    button {
+      flex: 1; 
+      padding: 16px;
+      border: none;
+      border-radius: 12px;
+      background: #38488f;
+      color: white;
+      font-weight: bold;
+      font-size: 16px;
+      cursor: pointer;
+      transition: all 0.3s ease;
+      box-shadow: 0 4px 10px rgba(56, 72, 143, 0.2);
+    }
+    button:hover { 
+      background: #2e3b75; 
+      transform: translateY(-3px);
+      box-shadow: 0 6px 15px rgba(56, 72, 143, 0.3);
+    }
+    button:active { transform: translateY(-1px); }
+
+    
+    #response-box {
+      margin-top: 40px;
+      padding: 25px;
+      background: #f8fafc;
+      border-radius: 12px;
+      border: 1px solid #e0e6ed;
+      border-left: 6px solid #38488f;
+    }
+    #response-box label { margin-bottom: 15px; color: #38488f; }
+    
+    #response { 
+      margin: 0; 
+      color: #333; 
+      font-family: 'Courier New', monospace; 
+      font-size: 15px;
+      word-break: break-all; 
+      background: #fff;
+      padding: 15px;
+      border-radius: 8px;
+      border: 1px solid #eee;
+    }
+
+    .footer-links {
+    margin-top: 30px;
+    border-top: 1px solid #eee;
+    padding-top: 20px;
+    text-align: center;
+    }
+    .back-link { 
+    color: #888; 
+    text-decoration: none; 
+    font-size: 15px; 
+    transition: color 0.3s;
+    }
+    .back-link:hover { color: #38488f; text-decoration: underline; }
+  </style>
 
   <script>
+    
     async function sendEcho() {
       const message = document.getElementById("msg").value;
-
-      // Example: POST request to /echo endpoint
       try {
         const response = await fetch("/echo", {
             method: "POST",
-            headers: {
-              "Content-Type": "application/json"
-            },
+            headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ text: message })
          });
-
-        if (!response.ok) {
-            throw new Error("HTTP error " + response.status);
-        }
-
+        if (!response.ok) throw new Error("HTTP error " + response.status);
         const result = await response.text();
-        document.getElementById("response").textContent = "Server replied: " + result;
+        document.getElementById("response").textContent = result;
       } catch (err) {
         document.getElementById("response").textContent = "Request failed: " + err.message;
       }
     }
 
-
     async function sendLogin() {
       const message = document.getElementById("msg").value;
-
-      // Example: POST request to /login endpoint
       try {
         const response = await fetch("/login", {
             method: "POST",
-            headers: {
-              "Content-Type": "application/json"
-            },
+            headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ text: message })
          });
-
-        if (!response.ok) {
-            throw new Error("HTTP error " + response.status);
-        }
-
+        if (!response.ok) throw new Error("HTTP error " + response.status);
         const result = await response.text();
-        document.getElementById("response").textContent = "Server replied: " + result;
+        document.getElementById("response").textContent = result;
       } catch (err) {
         document.getElementById("response").textContent = "Request failed: " + err.message;
       }
@@ -56,42 +159,43 @@
 
     async function sendHello() {
       const message = document.getElementById("msg").value;
-
-      // Example: PUT request to /hello endpoint
       try {
         const response = await fetch("/hello", {
             method: "PUT",
-            headers: {
-              "Content-Type": "application/json"
-            },
+            headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ text: message })
          });
-
-        if (!response.ok) {
-            throw new Error("HTTP error " + response.status);
-        }
-
+        if (!response.ok) throw new Error("HTTP error " + response.status);
         const result = await response.text();
-        document.getElementById("response").textContent = "Server replied: " + result;
+        document.getElementById("response").textContent = result;
       } catch (err) {
         document.getElementById("response").textContent = "Request failed: " + err.message;
       }
     }
    </script>
-
 </head>
 <body>
-  <h2>Send Message to Server</h2>
+  <div class="test-container">
+    <h2>🚀 Server Message Tester</h2>
 
-  <!-- Input field -->
-  <label for="msg">Message:</label>
-  <input type="text" id="msg">
-  <button onclick="sendEcho()">Send Echo</button>
-  <button onclick="sendLogin()">Send Login</button>
-  <button onclick="sendHello()">Send Hello</button>
+    <div class="input-group">
+      <label for="msg">Message Content</label>
+      <input type="text" id="msg" placeholder="Type your test message here...">
+    </div>
 
-  <!-- Output area -->
-  <label for="output">Server output:</label>
-  <p id="response"></p>
+    <div class="button-grid">
+      <button onclick="sendEcho()">Send Echo</button>
+      <button onclick="sendLogin()">Send Login</button>
+      <button onclick="sendHello()">Send Hello</button>
+    </div>
+
+    <div id="response-box">
+      <label><strong>Server output:</strong></label>
+      <p id="response">Waiting for action...</p>
+    </div>
+    <div class="footer-links">
+        <a href="index.html" class="back-link">← Back to Home Page</a>
+    </div>
+  </div>
 </body>
 </html>

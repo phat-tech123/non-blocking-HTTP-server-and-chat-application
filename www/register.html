@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>Register</title>
+
+<style>
+body{
+    background:#f4f7f6;
+    display:flex;
+    justify-content:center;
+    align-items:center;
+    min-height:100vh;
+    margin:0;
+    font-family:sans-serif;
+}
+
+.card{
+    width:500px;
+    padding:50px;
+    background:white;
+    border-radius:20px;
+    box-shadow:0 15px 35px rgba(0,0,0,0.1);
+}
+
+h1{
+    color:#38488f;
+    text-align:center;
+}
+
+.form-group{
+    margin-bottom:20px;
+}
+
+label{
+    display:block;
+    margin-bottom:8px;
+    font-weight:600;
+}
+
+input{
+    width:100%;
+    padding:14px;
+    border:2px solid #e0e6ed;
+    border-radius:12px;
+    box-sizing:border-box;
+}
+
+.btn{
+    width:100%;
+    padding:16px;
+    background:#38488f;
+    color:white;
+    border:none;
+    border-radius:12px;
+    cursor:pointer;
+    font-weight:bold;
+}
+</style>
+</head>
+
+<body>
+
+<div class="card">
+    <h1>Create Account</h1>
+
+    <!-- KHÔNG dùng form -->
+    <div id="registerForm">
+
+        <div class="form-group">
+            <label>Username</label>
+            <input type="text" id="regUser">
+        </div>
+
+        <div class="form-group">
+            <label>Password</label>
+            <input type="password" id="regPass">
+        </div>
+
+        <div class="form-group">
+            <label>Client Port</label>
+            <input type="number" id="regPort">
+        </div>
+
+        <button type="button" class="btn" onclick="register()">Register Now</button>
+    </div>
+
+    <div style="display:flex;justify-content:space-between;margin-top:25px;">
+        <a href="/login.html">Already have account? Login</a>
+        <a href="/index.html">← Back Home</a>
+    </div>
+</div>
+
+<script>
+async function register(){
+
+    const username = document.getElementById("regUser").value.trim();
+    const password = document.getElementById("regPass").value.trim();
+    const port = parseInt(document.getElementById("regPort").value);
+
+    // ===== VALIDATE =====
+    if(!username){
+        alert("Username không được để trống");
+        return;
+    }
+
+    if(!password){
+        alert("Password không được để trống");
+        return;
+    }
+
+    if(isNaN(port) || port <= 0 || port > 65535){
+        alert("Port không hợp lệ (1-65535)");
+        return;
+    }
+
+    try{
+        const response = await fetch("/register", {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json"
+            },
+            body: JSON.stringify({
+                username,
+                password,
+                port,
+                display_name: username
+            })
+        });
+
+        // kiểm tra HTTP status
+        if(!response.ok){
+            throw new Error("HTTP " + response.status);
+        }
+
+        let data;
+        try{
+            data = await response.json();
+        }catch{
+            throw new Error("Invalid JSON response");
+        }
+
+        console.log("REGISTER RESPONSE:", data);
+
+        if(data.success){
+            alert("Đăng ký thành công!");
+
+            // redirect SAME ORIGIN
+            window.location.href = "/login.html";
+        }else{
+            alert(data.message || "Đăng ký thất bại");
+        }
+
+    }catch(err){
+        console.error("ERROR:", err);
+        alert("Lỗi: " + err.message);
+    }
+}
+</script>
+
+</body>
+</html>

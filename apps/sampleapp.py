@@ -55,6 +55,18 @@ def ok_response(data=None, message="ok"):
 def error_response(message, code="BAD_REQUEST"):
     return json_response({"success": False, "error": code, "message": message})
 
+# Standard 401 response with WWW-Authenticate challenge
+def unauthorized_response(message="Unauthorized", code="UNAUTHORIZED"):
+    return build_hook_response(
+        body=json_response({"success": False, "error": code, "message": message}),
+        status_code=401,
+        reason="Unauthorized",
+        headers={
+            "Content-Type": "application/json",
+            "WWW-Authenticate": 'Basic realm="AsynapRous", charset="UTF-8"',
+        },
+    )
+
 # Create envelope for hook response (format HTTPAdapter use)
 def build_hook_response(body, status_code=200, reason="OK", headers=None, cookies=None):
     payload = body if isinstance(body, (bytes, bytearray)) else str(body).encode("utf-8")
@@ -123,6 +135,44 @@ def extract_session_id(headers):
             return value if value else None
 
     return None
+
+
+# Resolve authenticated user based on session cookie (preferred) or Basic auth header.
+# Returns (user_id, username) or (None, None).
+def authenticate_request(repo, headers):
+    # 1) Cookie session
+    session_id = extract_session_id(headers)
+    session = get_session(session_id)
+    if session:
+        return str(session.get("user_id")), str(session.get("username"))
+
+    # 2) Basic auth fallback (useful for demo via curl/Invoke-RestMethod)
+    username, password = parse_basic_auth(headers)
+    username = str(username or "").strip()
+    password = str(password or "")
+    if not username or not password:
+        return None, None
+
+    with repo._connect() as conn:
+        user = repo.get_user_by_username(conn, username)
+    if not user:
+        return None, None
+
+    stored_hash = user.get("password_hash") or ""
+    if not verify_password(password, stored_hash):
+        return None, None
+
+    return str(user["user_id"]), str(user["username"])
+
+
+def require_auth(repo, headers):
+    user_id, username = authenticate_request(repo, headers)
+    if not user_id:
+        return None, None, unauthorized_response(
+            "Missing or invalid credentials. Provide session_id cookie or Basic Authorization header.",
+            "AUTH_REQUIRED",
+        )
+    return user_id, username, None
  
 # Get repository instance from app
 def get_repo():
@@ -503,6 +553,10 @@ def extract_client_ip(headers):
         elif remote_addr:
             ip = str(remote_addr).strip()
 
+    # Nếu browser không gửi header IP thì dùng localhost
+    if not ip:
+        ip = "127.0.0.1"
+
     return ip
 
 # Kiểm tra port hợp lệ
@@ -818,6 +872,9 @@ def logout(headers="guest", body="anonymous"):
 @app.route('/peers/active', methods=['GET'])
 def list_active_peers(headers="guest", body="anonymous"):
     repo = get_repo()
+    _, _, err = require_auth(repo, headers)
+    if err:
+        return err
     try:
         peers = repo.get_active_peers()
         return ok_response(
@@ -845,6 +902,9 @@ def connect_peer(headers="guest", body="anonymous"):
         return error_response("Peer id is invalid", "VALIDATION_ERROR")
 
     repo = get_repo()
+    _, _, err = require_auth(repo, headers)
+    if err:
+        return err
 
     try:
         connection = repo.create_peer_connection(from_peer_id, to_peer_id, status="PENDING")
@@ -894,6 +954,9 @@ def reconnect_active_peers(headers="guest", body="anonymous"):
         return error_response("user_id or username is required", "VALIDATION_ERROR")
 
     repo = get_repo()
+    _, _, err = require_auth(repo, headers)
+    if err:
+        return err
 
     try:
         if user_id is None:
@@ -946,6 +1009,9 @@ def list_connections(headers="guest", body="anonymous"):
         )
 
     repo = get_repo()
+    _, _, err = require_auth(repo, headers)
+    if err:
+        return err
 
     try:
         if user_id is not None:
@@ -988,6 +1054,9 @@ def update_connection_status(headers="guest", body="anonymous"):
 
     status = str(payload["status"]).strip().upper()
     repo = get_repo()
+    _, _, err = require_auth(repo, headers)
+    if err:
+        return err
 
     try:
         connection, affected = repo.update_connection_status_by_id(connection_id, status)
@@ -1024,6 +1093,9 @@ def create_channel(headers="guest", body="anonymous"):
     is_private = bool(payload.get("is_private", False))
     access_policy = payload.get("access_policy", {})
     repo = get_repo()
+    _, _, err = require_auth(repo, headers)
+    if err:
+        return err
 
     try:
         channel = repo.create_channel_and_channel_owner(
@@ -1069,6 +1141,9 @@ def join_channel(headers="guest", body="anonymous"):
 
     role = str(payload.get("role", "member")).strip() or "member"
     repo = get_repo()
+    _, _, err = require_auth(repo, headers)
+    if err:
+        return err
 
     try:
         member = repo.create_channel_member(channel_id=channel_id, peer_id=peer_id, role=role)
@@ -1093,6 +1168,9 @@ def list_channels(headers="guest", body="anonymous"):
         return error_response("username or user_id is required", "VALIDATION_ERROR")
 
     repo = get_repo()
+    _, _, err = require_auth(repo, headers)
+    if err:
+        return err
 
     try:
         if username and not user_id:
@@ -1128,6 +1206,9 @@ def list_channel_messages(headers="guest", body="anonymous"):
 
     limit = max(1, min(limit, 500))
     repo = get_repo()
+    _, _, err = require_auth(repo, headers)
+    if err:
+        return err
 
     try:
         messages = repo.get_messages_by_channel_id(channel_id=channel_id, limit=limit)
@@ -1169,6 +1250,9 @@ def send_direct_message(headers="guest", body="anonymous"):
         return error_response("Message body must not be empty", "VALIDATION_ERROR")
 
     repo = get_repo()
+    _, _, err = require_auth(repo, headers)
+    if err:
+        return err
 
     try:
         sender_peer = repo.get_peer_detail_by_id(sender_peer_id)
@@ -1248,6 +1332,103 @@ def send_direct_message(headers="guest", body="anonymous"):
     except Exception as ex:
         return error_response(str(ex), "DIRECT_MESSAGE_FAILED")
 
+# Broadcast message: store one copy per recipient and attempt realtime delivery if stream connection exists.
+@app.route('/messages/broadcast', methods=['POST'])
+def broadcast_message(headers="guest", body="anonymous"):
+    payload = parse_json_body(body)
+    if payload is None:
+        return error_response("Invalid JSON body", "INVALID_JSON")
+
+    err = require_fields(payload, ["sender_peer_id", "body"])
+    if err:
+        return error_response(err, "VALIDATION_ERROR")
+
+    try:
+        sender_peer_id = int(payload["sender_peer_id"])
+    except (TypeError, ValueError):
+        return error_response("sender_peer_id is invalid", "VALIDATION_ERROR")
+
+    channel_id = payload.get("channel_id")
+    if channel_id is not None:
+        try:
+            channel_id = int(channel_id)
+        except (TypeError, ValueError):
+            return error_response("channel_id is invalid", "VALIDATION_ERROR")
+
+    body_text = str(payload["body"]).strip()
+    if not body_text:
+        return error_response("Message body must not be empty", "VALIDATION_ERROR")
+
+    repo = get_repo()
+    _, _, err = require_auth(repo, headers)
+    if err:
+        return err
+
+    try:
+        sender_peer = repo.get_peer_detail_by_id(sender_peer_id)
+        if sender_peer is None:
+            return error_response("Sender peer not found", "SENDER_PEER_NOT_FOUND")
+
+        sender_user_id = sender_peer["user_id"]
+        sender_active = str(sender_peer.get("status", "")).upper() == "ACTIVE"
+
+        active_peers = repo.get_active_peers()
+        targets = [p for p in active_peers if int(p.get("id")) != sender_peer_id]
+
+        stored = 0
+        delivered_realtime = 0
+        results = []
+
+        for target in targets:
+            target_peer_id = int(target.get("id"))
+            target_peer = repo.get_peer_detail_by_id(target_peer_id)
+            if target_peer is None:
+                continue
+
+            target_user_id = target_peer["user_id"]
+
+            message = repo.create_message(
+                channel_id=channel_id,
+                sender_peer_id=sender_peer_id,
+                sender_user_id=sender_user_id,
+                body=body_text,
+                message_type="BROADCAST",
+                target_peer_id=target_peer_id,
+                target_user_id=target_user_id,
+            )
+            stored += 1
+
+            repo.create_notification(target_peer_id, target_user_id, message["id"])
+
+            target_active = str(target_peer.get("status", "")).upper() == "ACTIVE"
+            realtime_detail = {"attempted": False, "ok": False, "reason": "not_attempted"}
+            if sender_active and target_active:
+                runtime = send_direct_via_stream(sender_peer, target_peer, message)
+                realtime_detail = runtime
+                if runtime.get("ok"):
+                    delivered_realtime += 1
+
+            results.append(
+                {
+                    "target_peer_id": target_peer_id,
+                    "stored": True,
+                    "realtime": realtime_detail,
+                }
+            )
+
+        return ok_response(
+            data={
+                "sender_peer_id": sender_peer_id,
+                "total_targets": len(targets),
+                "total_stored": stored,
+                "total_realtime_delivered": delivered_realtime,
+                "results": results,
+            },
+            message="Broadcast message sent",
+        )
+    except Exception as ex:
+        return error_response(str(ex), "BROADCAST_MESSAGE_FAILED")
+
 # Lấy danh sách thông báo của user
 @app.route('/notifications/list', methods=['POST'])
 def list_notifications(headers="guest", body="anonymous"):
@@ -1263,6 +1444,9 @@ def list_notifications(headers="guest", body="anonymous"):
         return error_response("username or user_id is required", "VALIDATION_ERROR")
 
     repo = get_repo()
+    _, _, err = require_auth(repo, headers)
+    if err:
+        return err
 
     try:
         if username and not user_id:
@@ -1296,6 +1480,9 @@ def mark_notifications_read(headers="guest", body="anonymous"):
         return error_response("notification_ids contains invalid value", "VALIDATION_ERROR")
 
     repo = get_repo()
+    _, _, err = require_auth(repo, headers)
+    if err:
+        return err
 
     try:
         affected = repo.mark_notifications_read(ids)

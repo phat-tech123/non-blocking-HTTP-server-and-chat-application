@@ -104,7 +104,9 @@ class Request():
              
     def prepare_headers(self, raw_headers):
         """Prepares the given HTTP headers."""
-        lines = raw_headers.split('\r\n')
+        # Support both CRLF and LF newlines (some clients may send LF-only).
+        normalized = raw_headers.replace("\r\n", "\n")
+        lines = normalized.split("\n")
         headers = {}
         # Bỏ qua dòng đầu tiên vì nó là Request Line (GET / HTTP/1.1)
         for line in lines[1:]:
@@ -118,7 +120,9 @@ class Request():
         """Prepares the given HTTP headers."""
         # Split request into header section and body section
         # HTTP quy định kết thúc header bằng 2 dấu ngắt dòng liên tiếp
-        parts = request.split("\r\n\r\n", 1)  
+        parts = request.split("\r\n\r\n", 1)
+        if len(parts) == 1:
+            parts = request.split("\n\n", 1)
 
         _headers = parts[0]
         _body = parts[1] if len(parts) > 1 else ""

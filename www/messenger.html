@@ -1,0 +1,292 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>Messenger - BKSYSNET</title>
+
+<style>
+body { margin: 0; font-family: sans-serif; background: #f0f2f5; display: flex; height: 100vh; }
+
+.sidebar { width: 300px; background: white; border-right: 1px solid #ddd; display: flex; flex-direction: column; }
+.sidebar-header { padding: 20px; background: #38488f; color: white; display: flex; justify-content: space-between; align-items: center; }
+.sidebar-header h3 { margin: 0; font-size: 18px; }
+
+.list-section { flex: 1; overflow-y: auto; padding: 10px; }
+.list-item { padding: 12px; border-radius: 8px; margin-bottom: 5px; cursor: pointer; transition: 0.2s; border: 1px solid transparent; }
+.list-item:hover { background: #f0f2f5; }
+
+.section-title { font-size: 12px; color: #888; margin: 15px 0 5px 5px; text-transform: uppercase; font-weight: bold; }
+
+.main-chat { flex: 1; display: flex; flex-direction: column; }
+.chat-header { padding: 15px 25px; background: white; border-bottom: 1px solid #ddd; display: flex; justify-content: space-between; align-items: center; }
+.chat-header h4 { margin: 0; font-size: 18px; }
+
+.chat-messages { flex: 1; padding: 20px; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; }
+
+.msg { max-width: 70%; padding: 10px 15px; border-radius: 18px; font-size: 14px; line-height: 1.4; word-wrap: break-word; }
+.msg.sent { align-self: flex-end; background: #38488f; color: white; }
+.msg.received { align-self: flex-start; background: #e4e6eb; color: black; }
+
+.chat-input-area { padding: 20px; background: white; display: flex; gap: 10px; border-top: 1px solid #ddd; }
+input[type="text"] { flex: 1; padding: 12px 15px; border: 1px solid #ddd; border-radius: 20px; outline: none; }
+input[type="text"]:focus { border-color: #38488f; }
+
+.send-btn { background: #38488f; color: white; border: none; padding: 10px 25px; border-radius: 20px; cursor: pointer; font-weight: bold; }
+.send-btn:hover { background: #2c3970; }
+
+.btn-logout { background: none; border: 1px solid white; color: white; padding: 5px 10px; border-radius: 5px; cursor: pointer; font-size: 12px; }
+.btn-logout:hover { background: rgba(255,255,255,0.1); }
+</style>
+</head>
+
+<body>
+
+<div class="sidebar">
+    <div class="sidebar-header">
+        <h3>BKSYSNET Chat</h3>
+        <button class="btn-logout" onclick="logout()">Logout</button>
+    </div>
+
+    <div class="list-section">
+        <div class="section-title">Online Peers</div>
+        <div id="peerList"></div>
+
+        <div class="section-title" style="margin-top: 20px;">Channels (Groups)</div>
+        <div id="channelList"></div>
+    </div>
+</div>
+
+<div class="main-chat">
+    <div class="chat-header">
+        <h4 id="chatWith">Select a peer</h4>
+        <span id="status" style="color: #888; font-size: 14px;">● Waiting</span>
+    </div>
+
+    <div class="chat-messages" id="chatWindow">
+        </div>
+
+    <div class="chat-input-area">
+        <input type="text" id="messageInput" placeholder="Type message..." onkeypress="handleKeyPress(event)">
+        <button class="send-btn" onclick="sendMessage()">Send</button>
+    </div>
+</div>
+
+<script>
+
+// ================== AUTH CHECK ==================
+const currentUser = JSON.parse(localStorage.getItem("currentUser") || "null");
+
+if(!currentUser){
+    alert("Bạn chưa đăng nhập");
+    window.location.href = "/login.html";
+}
+
+// ================== LOGOUT ==================
+async function logout(){
+    try{
+        const response = await fetch("/logout", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ username: currentUser.username })
+        });
+
+        const data = await response.json();
+        console.log("LOGOUT:", data);
+
+        if(data.success || response.ok){
+            localStorage.removeItem("currentUser");
+            window.location.href = "/login.html";
+        } else {
+            alert(data.message || "Logout thất bại");
+        }
+    } catch(err) {
+        console.error(err);
+        alert("Lỗi logout");
+    }
+}
+
+// ================== INIT RECONNECT ==================
+async function reconnectActivePeers() {
+    try {
+        const res = await fetch("/peers/reconnect-active", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ user_id: currentUser.user_id })
+        });
+        const data = await res.json();
+        console.log("RECONNECT P2P:", data);
+    } catch (err) {
+        console.error("Lỗi reconnect:", err);
+    }
+}
+
+// ================== LOAD PEERS ==================
+async function loadPeers(){
+    try{
+        const res = await fetch("/peers/active", { method: "GET" });
+        const data = await res.json();
+        console.log("PEERS:", data);
+
+        const list = document.getElementById("peerList");
+        list.innerHTML = "";
+
+        const peersArray = (data.data && data.data.peers) ? data.data.peers : [];
+
+        if(peersArray.length === 0){
+            list.innerHTML = "<div style='padding: 12px; font-size: 14px; color: #888;'>No online users</div>";
+            return;
+        }
+
+        peersArray.forEach(peer => {
+            // So sánh id số nguyên để loại bỏ chính mình khỏi danh sách
+            if(currentUser.peer && peer.id === currentUser.peer.id) return;
+
+            const div = document.createElement("div");
+            div.className = "list-item";
+            div.innerText = (peer.display_name || "Unknown") + " (" + peer.ip + ")";
+            div.onclick = () => selectPeer(peer);
+            list.appendChild(div);
+        });
+    } catch(err) {
+        console.error("Lỗi load peers:", err);
+    }
+}
+
+// ================== LOAD CHANNELS ==================
+async function loadChannels() {
+    try {
+        const res = await fetch("/channels/list", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ user_id: currentUser.user_id })
+        });
+
+        const data = await res.json();
+        console.log("CHANNELS:", data);
+        
+        const list = document.getElementById("channelList");
+        list.innerHTML = "";
+
+        // Lấy đúng mảng channels từ trong data.data
+        const channelsArray = (data.data && data.data.channels) ? data.data.channels : [];
+
+        if (channelsArray.length === 0) {
+            list.innerHTML = "<div style='padding: 12px; font-size: 14px; color: #888;'>No groups</div>";
+            return;
+        }
+
+        channelsArray.forEach(channel => {
+            const div = document.createElement("div");
+            div.className = "list-item";
+            div.innerText = "# " + channel.name;
+            list.appendChild(div);
+        });
+    } catch (err) {
+        console.error("Lỗi load channels:", err);
+    }
+}
+// ================== SELECT PEER & CONNECT P2P ==================
+let currentPeer = null;
+
+async function selectPeer(peer){
+    currentPeer = peer;
+    document.getElementById("chatWith").innerText = peer.display_name || peer.username || "Unknown";
+    const statusSpan = document.getElementById("status");
+    
+    statusSpan.innerText = "Connecting...";
+    statusSpan.style.color = "orange";
+    
+    document.getElementById("chatWindow").innerHTML = "";
+
+    try {
+        const res = await fetch("/peers/connect", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                from_peer_id: currentUser.peer.id, // Sửa thành số nguyên lấy từ object peer
+                to_peer_id: peer.id                // Sửa thành số nguyên id của peer
+            })
+        });
+
+        const data = await res.json();
+        console.log("CONNECT P2P:", data);
+
+        if (data.success || res.ok) {
+            statusSpan.innerText = "● Connected";
+            statusSpan.style.color = "green";
+        } else {
+            statusSpan.innerText = "○ Disconnected";
+            statusSpan.style.color = "red";
+        }
+    } catch (err) {
+        console.error("Lỗi kết nối P2P:", err);
+        statusSpan.innerText = "Error";
+        statusSpan.style.color = "red";
+    }
+}
+
+// ================== SEND MESSAGE ==================
+async function sendMessage(){
+    const input = document.getElementById("messageInput");
+    const message = input.value.trim();
+
+    if(!message) return;
+    if(!currentPeer){
+        alert("Vui lòng chọn người để chat!");
+        return;
+    }
+
+    try{
+        const res = await fetch("/messages/direct", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                sender_peer_id: currentUser.peer.id, // Sửa thành số nguyên
+                target_peer_id: currentPeer.id,      // Sửa thành số nguyên
+                body: message
+            })
+        });
+
+        const data = await res.json();
+        console.log("SEND:", data);
+
+        if(data.success !== false){ 
+            addMessage(message, "sent");
+            input.value = "";
+        } else {
+            alert(data.message || "Gửi tin nhắn thất bại");
+        }
+    } catch(err) {
+        console.error(err);
+    }
+}
+
+
+function handleKeyPress(e) {
+    if (e.key === "Enter") {
+        sendMessage();
+    }
+}
+// ================== UI MESSAGE ==================
+function addMessage(text, type){
+    const chat = document.getElementById("chatWindow");
+
+    const div = document.createElement("div");
+    div.className = "msg " + type;
+    div.innerText = text;
+
+    chat.appendChild(div);
+    chat.scrollTop = chat.scrollHeight; // Cuộn xuống tin nhắn mới nhất
+}
+
+
+
+// ================== INIT ==================
+reconnectActivePeers();
+loadPeers();
+loadChannels();
+
+</script>
+
+</body>
+</html>

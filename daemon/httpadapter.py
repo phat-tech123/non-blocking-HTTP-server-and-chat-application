@@ -112,10 +112,12 @@ class HttpAdapter:
         # non-blocking
         conn.setblocking(False)
         
-        raw_data = b""
+        raw_data = bytearray()
         import time
         timeout = 5.0 
         start_time = time.time()
+        header_end = None
+        expected_total = None
 
         while True:
             # 1. against Slowloris Attack
@@ -130,11 +132,38 @@ class HttpAdapter:
                 if not chunk:
                     break
                     
-                raw_data += chunk
+                raw_data.extend(chunk)
                 start_time = time.time() 
-                
-                # 3. last request 
-                if len(chunk) < 4096:
+
+                # Determine header end and expected total bytes (Content-Length) once headers are complete.
+                if header_end is None:
+                    idx = raw_data.find(b"\r\n\r\n")
+                    delim_len = 4
+                    if idx == -1:
+                        idx = raw_data.find(b"\n\n")
+                        delim_len = 2
+
+                    if idx != -1:
+                        header_end = idx + delim_len
+                        header_bytes = bytes(raw_data[:idx])
+                        header_text = header_bytes.decode("latin-1", errors="ignore")
+                        content_length = 0
+                        for line in header_text.splitlines():
+                            if line.lower().startswith("content-length:"):
+                                try:
+                                    content_length = int(line.split(":", 1)[1].strip() or "0")
+                                except Exception:
+                                    content_length = 0
+                                break
+
+                        expected_total = header_end + max(0, content_length)
+
+                        # For requests without body (or Content-Length: 0), we can finish once headers are present.
+                        if expected_total == header_end:
+                            break
+
+                # If we know total bytes expected, stop when full request is received.
+                if expected_total is not None and len(raw_data) >= expected_total:
                     break
                     
             except BlockingIOError:
@@ -145,13 +174,13 @@ class HttpAdapter:
                 print(f"[HttpAdapter] socket error: {e}")
                 break
             
-            if not raw_data.strip():
-                print("[HttpAdapter] no data, disconnect.")
-                conn.close()
-                return 
+        if not bytes(raw_data).strip():
+            print("[HttpAdapter] no data, disconnect.")
+            conn.close()
+            return 
 
         # Decode raw data into string
-        msg = raw_data.decode("utf-8", errors="ignore")
+        msg = bytes(raw_data).decode("utf-8", errors="ignore")
         #----------------------------------------------------------------------------------------------------
 
         #req.prepare(msg, routes)
@@ -168,6 +197,19 @@ class HttpAdapter:
             req.headers.setdefault("Remote-Addr", str(addr[0]))
 
         print("[HttpAdapter] Invoke handle_client connection {}".format(addr))
+
+        if req.method == "OPTIONS":
+            print("[HttpAdapter] Intercepted OPTIONS preflight request for CORS")
+            cors_response = (
+                "HTTP/1.1 204 No Content\r\n"
+                "Access-Control-Allow-Origin: *\r\n"
+                "Access-Control-Allow-Methods: POST, GET, PUT, OPTIONS, DELETE\r\n"
+                "Access-Control-Allow-Headers: Content-Type, Authorization, Cookie\r\n"
+                "\r\n"
+            ).encode('utf-8')
+            conn.sendall(cors_response)
+            conn.close()
+            return
 
         # Handle request hook
         if req.hook:

@@ -4,10 +4,35 @@ __pycache__/
 
 # Virtual environments
 .venv/
+.venv-1/
 venv/
+ENV/
+env/
 
 # Local databases / generated artifacts
 db/chat.db
+
+# Python tool caches / reports
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# Logs / runtime dumps
+*.log
+*.out
+*.pid
+
+# Frontend dependencies / builds (if React frontend is used)
+node_modules/
+dist/
+build/
+
+# IDE settings
+.vscode/
+.idea/
 
 # OS / editor noise
 .DS_Store

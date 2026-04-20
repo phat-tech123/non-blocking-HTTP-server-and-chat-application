@@ -86,12 +86,18 @@ input{
     </div>
 
     <div style="display:flex;justify-content:space-between;margin-top:25px;">
-        <a href="/login.html">Already have account? Login</a>
-        <a href="/index.html">← Back Home</a>
+        <a href="login.html">Already have account? Login</a>
+        <a href="index.html">← Back Home</a>
     </div>
 </div>
 
 <script>
+const API_BASE = localStorage.getItem("apiBaseUrl") || (window.location.protocol + "//" + window.location.hostname + ":2026");
+
+function apiUrl(path){
+    return API_BASE + path;
+}
+
 async function register(){
 
     const username = document.getElementById("regUser").value.trim();
@@ -115,7 +121,7 @@ async function register(){
     }
 
     try{
-        const response = await fetch("/register", {
+        const response = await fetch(apiUrl("/register"), {
             method: "POST",
             headers: {
                 "Content-Type": "application/json"
@@ -143,10 +149,10 @@ async function register(){
         console.log("REGISTER RESPONSE:", data);
 
         if(data.success){
+            localStorage.setItem("apiBaseUrl", API_BASE);
             alert("Đăng ký thành công!");
 
-            // redirect SAME ORIGIN
-            window.location.href = "/login.html";
+            window.location.href = "login.html";
         }else{
             alert(data.message || "Đăng ký thất bại");
         }

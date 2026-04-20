@@ -15,6 +15,13 @@ body { margin: 0; font-family: sans-serif; background: #f0f2f5; display: flex; h
 .list-item { padding: 12px; border-radius: 8px; margin-bottom: 5px; cursor: pointer; transition: 0.2s; border: 1px solid transparent; }
 .list-item:hover { background: #f0f2f5; }
 
+.peer-row { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.peer-name { flex: 1; font-size: 14px; }
+.connect-btn { border: none; border-radius: 6px; padding: 6px 10px; background: #38488f; color: white; cursor: pointer; font-size: 12px; }
+.connect-btn:hover { background: #2c3970; }
+.connect-btn:disabled { background: #9aa3b6; cursor: not-allowed; }
+.channel-active { border-color: #38488f; background: #eef1ff; }
+
 .section-title { font-size: 12px; color: #888; margin: 15px 0 5px 5px; text-transform: uppercase; font-weight: bold; }
 
 .main-chat { flex: 1; display: flex; flex-direction: column; }
@@ -58,7 +65,7 @@ input[type="text"]:focus { border-color: #38488f; }
 
 <div class="main-chat">
     <div class="chat-header">
-        <h4 id="chatWith">Select a peer</h4>
+        <h4 id="chatWith">Select a channel</h4>
         <span id="status" style="color: #888; font-size: 14px;">● Waiting</span>
     </div>
 
@@ -75,6 +82,29 @@ input[type="text"]:focus { border-color: #38488f; }
 
 // ================== AUTH CHECK ==================
 const currentUser = JSON.parse(localStorage.getItem("currentUser") || "null");
+const selfPeerId = Number(currentUser && currentUser.peer ? currentUser.peer.id : 0);
+
+let activePeerIndex = {};
+let channelsCache = [];
+let connectedPeerIds = new Set();
+let selectedChannel = null;
+let selectedTargetPeerId = null;
+let chatPollingTimer = null;
+let channelLatestMessageId = {};
+const API_BASE = localStorage.getItem("apiBaseUrl") || (window.location.protocol + "//" + window.location.hostname + ":2026");
+
+function apiUrl(path){
+    return API_BASE + path;
+}
+
+function authHeaders(){
+    const headers = { "Content-Type": "application/json" };
+    const token = localStorage.getItem("authBasic");
+    if(token){
+        headers["Authorization"] = token;
+    }
+    return headers;
+}
 
 if(!currentUser){
     alert("Bạn chưa đăng nhập");
@@ -84,9 +114,9 @@ if(!currentUser){
 // ================== LOGOUT ==================
 async function logout(){
     try{
-        const response = await fetch("/logout", {
+        const response = await fetch(apiUrl("/logout"), {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
+            headers: authHeaders(),
             body: JSON.stringify({ username: currentUser.username })
         });
 
@@ -95,7 +125,8 @@ async function logout(){
 
         if(data.success || response.ok){
             localStorage.removeItem("currentUser");
-            window.location.href = "/login.html";
+            localStorage.removeItem("authBasic");
+            window.location.href = "login.html";
         } else {
             alert(data.message || "Logout thất bại");
         }
@@ -108,9 +139,9 @@ async function logout(){
 // ================== INIT RECONNECT ==================
 async function reconnectActivePeers() {
     try {
-        const res = await fetch("/peers/reconnect-active", {
+        const res = await fetch(apiUrl("/peers/reconnect-active"), {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
+            headers: authHeaders(),
             body: JSON.stringify({ user_id: currentUser.user_id })
         });
         const data = await res.json();
@@ -123,12 +154,16 @@ async function reconnectActivePeers() {
 // ================== LOAD PEERS ==================
 async function loadPeers(){
     try{
-        const res = await fetch("/peers/active", { method: "GET" });
+        const res = await fetch(apiUrl("/peers/active"), {
+            method: "GET",
+            headers: authHeaders(),
+        });
         const data = await res.json();
         console.log("PEERS:", data);
 
         const list = document.getElementById("peerList");
         list.innerHTML = "";
+        activePeerIndex = {};
 
         const peersArray = (data.data && data.data.peers) ? data.data.peers : [];
 
@@ -138,14 +173,26 @@ async function loadPeers(){
         }
 
         peersArray.forEach(peer => {
-            // So sánh id số nguyên để loại bỏ chính mình khỏi danh sách
-            if(currentUser.peer && peer.id === currentUser.peer.id) return;
+            activePeerIndex[Number(peer.id)] = peer;
+            if(Number(peer.id) === selfPeerId) return;
 
-            const div = document.createElement("div");
-            div.className = "list-item";
-            div.innerText = (peer.display_name || "Unknown") + " (" + peer.ip + ")";
-            div.onclick = () => selectPeer(peer);
-            list.appendChild(div);
+            const row = document.createElement("div");
+            row.className = "list-item peer-row";
+
+            const name = document.createElement("div");
+            name.className = "peer-name";
+            name.innerText = (peer.display_name || "Unknown") + " (" + peer.ip + ")";
+
+            const btn = document.createElement("button");
+            btn.className = "connect-btn";
+            const isConnected = connectedPeerIds.has(Number(peer.id));
+            btn.disabled = isConnected;
+            btn.innerText = isConnected ? "Connected" : "Connect";
+            btn.onclick = () => connectPeer(peer);
+
+            row.appendChild(name);
+            row.appendChild(btn);
+            list.appendChild(row);
         });
     } catch(err) {
         console.error("Lỗi load peers:", err);
@@ -153,76 +200,230 @@ async function loadPeers(){
 }
 
 // ================== LOAD CHANNELS ==================
+function getDirectPeerIdFromChannel(channel){
+    const policy = channel && channel.access_policy ? channel.access_policy : {};
+    const ids = Array.isArray(policy.peer_ids) ? policy.peer_ids.map(Number) : [];
+    if(ids.length < 2) return null;
+    if(!ids.includes(selfPeerId)) return null;
+    const other = ids.find(id => id !== selfPeerId);
+    return Number.isFinite(other) ? other : null;
+}
+
+function renderChannels(){
+    const list = document.getElementById("channelList");
+    list.innerHTML = "";
+
+    if (channelsCache.length === 0) {
+        list.innerHTML = "<div style='padding: 12px; font-size: 14px; color: #888;'>No groups</div>";
+        return;
+    }
+
+    channelsCache.forEach(channel => {
+        const div = document.createElement("div");
+        div.className = "list-item" + (selectedChannel && Number(selectedChannel.id) === Number(channel.id) ? " channel-active" : "");
+        div.innerText = "# " + channel.name;
+        div.onclick = () => selectChannel(channel);
+        list.appendChild(div);
+    });
+}
+
 async function loadChannels() {
     try {
-        const res = await fetch("/channels/list", {
+        const res = await fetch(apiUrl("/channels/list"), {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
+            headers: authHeaders(),
             body: JSON.stringify({ user_id: currentUser.user_id })
         });
 
         const data = await res.json();
         console.log("CHANNELS:", data);
-        
-        const list = document.getElementById("channelList");
-        list.innerHTML = "";
 
-        // Lấy đúng mảng channels từ trong data.data
-        const channelsArray = (data.data && data.data.channels) ? data.data.channels : [];
+        channelsCache = (data.data && data.data.channels) ? data.data.channels : [];
+        connectedPeerIds = new Set();
+        channelsCache.forEach(channel => {
+            const directPeerId = getDirectPeerIdFromChannel(channel);
+            if(directPeerId !== null){
+                connectedPeerIds.add(directPeerId);
+            }
+        });
 
-        if (channelsArray.length === 0) {
-            list.innerHTML = "<div style='padding: 12px; font-size: 14px; color: #888;'>No groups</div>";
-            return;
+        if(selectedChannel){
+            const matched = channelsCache.find(c => Number(c.id) === Number(selectedChannel.id));
+            selectedChannel = matched || null;
+            selectedTargetPeerId = matched ? getDirectPeerIdFromChannel(matched) : null;
         }
 
-        channelsArray.forEach(channel => {
-            const div = document.createElement("div");
-            div.className = "list-item";
-            div.innerText = "# " + channel.name;
-            list.appendChild(div);
-        });
+        renderChannels();
     } catch (err) {
         console.error("Lỗi load channels:", err);
     }
 }
-// ================== SELECT PEER & CONNECT P2P ==================
-let currentPeer = null;
+// ================== CONNECT P2P + CREATE CHANNEL ==================
 
-async function selectPeer(peer){
-    currentPeer = peer;
-    document.getElementById("chatWith").innerText = peer.display_name || peer.username || "Unknown";
+async function createDirectChannelWithPeer(peer){
+    const a = selfPeerId;
+    const b = Number(peer.id);
+    const low = Math.min(a, b);
+    const high = Math.max(a, b);
+    const channelName = "dm-" + low + "-" + high;
+
+    const createRes = await fetch(apiUrl("/channels/create"), {
+        method: "POST",
+        headers: authHeaders(),
+        body: JSON.stringify({
+            owner_peer_id: a,
+            name: channelName,
+            is_private: true,
+            access_policy: { mode: "direct", peer_ids: [a, b] }
+        })
+    });
+    const createData = await createRes.json();
+    if(!createData.success){
+        throw new Error(createData.message || "Tạo channel thất bại");
+    }
+
+    const channel = createData.data && createData.data.channel ? createData.data.channel : null;
+    if(!channel || !channel.id){
+        throw new Error("Không nhận được channel_id từ server");
+    }
+
+    const joinRes = await fetch(apiUrl("/channels/join"), {
+        method: "POST",
+        headers: authHeaders(),
+        body: JSON.stringify({
+            channel_id: channel.id,
+            peer_id: b,
+            role: "member"
+        })
+    });
+    const joinData = await joinRes.json();
+    if(!joinData.success){
+        throw new Error(joinData.message || "Thêm peer vào channel thất bại");
+    }
+
+    return channel;
+}
+
+async function connectPeer(peer){
+    const peerId = Number(peer.id);
+    if(connectedPeerIds.has(peerId)) return;
+
     const statusSpan = document.getElementById("status");
-    
-    statusSpan.innerText = "Connecting...";
+    statusSpan.innerText = "Connecting peer...";
     statusSpan.style.color = "orange";
-    
-    document.getElementById("chatWindow").innerHTML = "";
 
     try {
-        const res = await fetch("/peers/connect", {
+        const res = await fetch(apiUrl("/peers/connect"), {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
+            headers: authHeaders(),
             body: JSON.stringify({
-                from_peer_id: currentUser.peer.id, // Sửa thành số nguyên lấy từ object peer
-                to_peer_id: peer.id                // Sửa thành số nguyên id của peer
+                from_peer_id: selfPeerId,
+                to_peer_id: peerId
             })
         });
 
         const data = await res.json();
         console.log("CONNECT P2P:", data);
 
-        if (data.success || res.ok) {
-            statusSpan.innerText = "● Connected";
+        if (data.success) {
+            statusSpan.innerText = "Connected, creating channel...";
+            statusSpan.style.color = "orange";
+
+            const existing = channelsCache.find(c => Number(getDirectPeerIdFromChannel(c)) === peerId);
+            const channel = existing || await createDirectChannelWithPeer(peer);
+
+            connectedPeerIds.add(peerId);
+            selectedChannel = channel;
+            selectedTargetPeerId = peerId;
+
+            statusSpan.innerText = "● Connected + Channel Ready (#" + channel.id + ")";
             statusSpan.style.color = "green";
+            await loadChannels();
+            await loadPeers();
+            await selectChannel(channel);
         } else {
             statusSpan.innerText = "○ Disconnected";
             statusSpan.style.color = "red";
+            alert(data.message || "Kết nối peer thất bại");
         }
     } catch (err) {
         console.error("Lỗi kết nối P2P:", err);
         statusSpan.innerText = "Error";
         statusSpan.style.color = "red";
+        alert("Không thể hoàn tất luồng connect/channel: " + err.message);
     }
+}
+
+// ================== CHANNEL CHAT ==================
+async function loadChannelMessages(channelId){
+    const chatWindow = document.getElementById("chatWindow");
+
+    try {
+        const res = await fetch(apiUrl("/channels/messages"), {
+            method: "POST",
+            headers: authHeaders(),
+            body: JSON.stringify({ channel_id: Number(channelId), limit: 100 })
+        });
+        const data = await res.json();
+        if(!data.success){
+            throw new Error(data.message || "Không tải được tin nhắn channel");
+        }
+
+        const rawMessages = (data.data && Array.isArray(data.data.messages)) ? data.data.messages : [];
+        const latestId = rawMessages.length > 0 ? Number(rawMessages[0].id || 0) : 0;
+        const prevLatestId = Number(channelLatestMessageId[channelId] || 0);
+
+        // Không re-render nếu không có tin mới, tránh nháy UI.
+        if(prevLatestId > 0 && latestId === prevLatestId){
+            return;
+        }
+
+        channelLatestMessageId[channelId] = latestId;
+        chatWindow.innerHTML = "";
+
+        const messages = rawMessages.slice().reverse();
+        messages.forEach(msg => {
+            const type = Number(msg.sender_peer_id) === selfPeerId ? "sent" : "received";
+            addMessage(msg.body, type);
+        });
+    } catch (err) {
+        console.error("Lỗi load channel messages:", err);
+    }
+}
+
+async function selectChannel(channel){
+    selectedChannel = channel;
+    selectedTargetPeerId = getDirectPeerIdFromChannel(channel);
+
+    const title = document.getElementById("chatWith");
+    const statusSpan = document.getElementById("status");
+
+    if(selectedTargetPeerId !== null){
+        const peer = activePeerIndex[selectedTargetPeerId];
+        title.innerText = "# " + channel.name + " - " + (peer ? (peer.display_name || "Peer " + selectedTargetPeerId) : ("Peer " + selectedTargetPeerId));
+        statusSpan.innerText = "● Channel selected";
+        statusSpan.style.color = "green";
+    } else {
+        title.innerText = "# " + channel.name;
+        statusSpan.innerText = "● Channel selected (non-direct)";
+        statusSpan.style.color = "#888";
+    }
+
+    renderChannels();
+    await loadChannelMessages(channel.id);
+}
+
+function startChannelPolling(){
+    if(chatPollingTimer){
+        clearInterval(chatPollingTimer);
+    }
+
+    chatPollingTimer = setInterval(async () => {
+        if(!selectedChannel || !selectedChannel.id){
+            return;
+        }
+        await loadChannelMessages(selectedChannel.id);
+    }, 2000);
 }
 
 // ================== SEND MESSAGE ==================
@@ -231,18 +432,24 @@ async function sendMessage(){
     const message = input.value.trim();
 
     if(!message) return;
-    if(!currentPeer){
-        alert("Vui lòng chọn người để chat!");
+    if(!selectedChannel || !selectedChannel.id){
+        alert("Vui lòng chọn channel để chat!");
+        return;
+    }
+
+    if(selectedTargetPeerId === null){
+        alert("Channel hiện tại không phải direct channel hợp lệ để gửi direct message.");
         return;
     }
 
     try{
-        const res = await fetch("/messages/direct", {
+        const res = await fetch(apiUrl("/messages/direct"), {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
+            headers: authHeaders(),
             body: JSON.stringify({
-                sender_peer_id: currentUser.peer.id, // Sửa thành số nguyên
-                target_peer_id: currentPeer.id,      // Sửa thành số nguyên
+                sender_peer_id: selfPeerId,
+                target_peer_id: selectedTargetPeerId,
+                channel_id: selectedChannel.id,
                 body: message
             })
         });
@@ -282,9 +489,12 @@ function addMessage(text, type){
 
 
 // ================== INIT ==================
-reconnectActivePeers();
-loadPeers();
-loadChannels();
+(async function initMessenger(){
+    await reconnectActivePeers();
+    await loadChannels();
+    await loadPeers();
+    startChannelPolling();
+})();
 
 </script>
 

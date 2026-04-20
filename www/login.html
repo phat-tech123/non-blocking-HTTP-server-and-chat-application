@@ -101,12 +101,18 @@
     </div>
 
     <div style="display:flex;justify-content:space-between;margin-top:25px;">
-        <a href="/register.html">Don't have account? Register</a>
-        <a href="/index.html">← Back Home</a>
+        <a href="register.html">Don't have account? Register</a>
+        <a href="index.html">← Back Home</a>
     </div>
 </div>
 
 <script>
+const API_BASE = localStorage.getItem("apiBaseUrl") || (window.location.protocol + "//" + window.location.hostname + ":2026");
+
+function apiUrl(path){
+    return API_BASE + path;
+}
+
 async function login(){
 
     const username = document.getElementById("username").value.trim();
@@ -130,7 +136,7 @@ async function login(){
     }
 
     try{
-        const response = await fetch("/login", {
+        const response = await fetch(apiUrl("/login"), {
             method:"POST",
             headers:{
                 "Content-Type":"application/json"
@@ -156,13 +162,14 @@ async function login(){
         console.log("LOGIN RESPONSE:", data);
 
         if(data.success){
+            localStorage.setItem("apiBaseUrl", API_BASE);
+            localStorage.setItem("authBasic", "Basic " + btoa(username + ":" + password));
             // lưu user info
             localStorage.setItem("currentUser", JSON.stringify(data.data));
 
             alert("Đăng nhập thành công!");
 
-            // redirect SAME ORIGIN
-            window.location.href = "/messenger.html";
+            window.location.href = "messenger.html";
         }else{
             alert(data.message || "Sai tài khoản hoặc mật khẩu");
         }

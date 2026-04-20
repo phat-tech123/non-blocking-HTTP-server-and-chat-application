@@ -58,8 +58,6 @@ Lưu ý:
 
 ### 3) Khởi động frontend
 
-#### 3.1 Frontend tĩnh (www/static)
-
 ```powershell
 python -m http.server 5500
 ```
@@ -67,34 +65,14 @@ python -m http.server 5500
 Truy cập:
 
 ```text
-http://127.0.0.1:5500/www/index.html
+http://127.0.0.1:5500
 ```
 
-#### 3.2 Nếu frontend dùng React
+Khi mở URL trên, trang sẽ tự chuyển đến login:
 
-Vào thư mục frontend (ví dụ `frontend/`):
-
-```powershell
-cd frontend
-npm install
-npm run dev
+```text
+http://127.0.0.1:5500/www/login.html
 ```
-
-Nếu dùng Create React App:
-
-```powershell
-npm start
-```
-
-Cấu hình URL API (frontend dùng để gọi backend):
-
-- Local: `http://127.0.0.1:2026`.
-- LAN: `http://<IP-LAN-MAY-A>:2026`.
-
-Ý nghĩa nhanh:
-
-- `Local` dùng khi frontend và backend chạy trên cùng 1 máy.
-- `LAN` dùng khi mở frontend từ máy khác trong cùng mạng nội bộ.
 
 ### 4) Truy cập test trên máy thật cùng mạng LAN
 
@@ -109,7 +87,13 @@ Từ máy B (hoặc máy bất kỳ trong cùng LAN), truy cập web app bằng 
 2. Nhập URL frontend nếu frontend tĩnh chạy ở máy A cổng 5500:
 
 ```text
-http://192.168.1.10:5500/www/index.html
+http://192.168.1.10:5500
+```
+
+Trang sẽ tự chuyển đến:
+
+```text
+http://192.168.1.10:5500/www/login.html
 ```
 
 3. Đăng ký/đăng nhập trực tiếp trên giao diện web.

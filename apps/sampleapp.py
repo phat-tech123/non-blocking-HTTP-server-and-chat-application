@@ -381,6 +381,9 @@ def establish_stream_connection(from_peer, to_peer, timeout=2.0):
 
     from_peer_id = int(from_peer.get("id"))
     to_peer_id = int(to_peer.get("id"))
+    if from_peer_id == to_peer_id:
+        return {"attempted": False, "ok": False, "reason": "self_connect_not_allowed"}
+
     key = stream_key(from_peer_id, to_peer_id)
     runtime = get_stream_runtime()
 
@@ -901,32 +904,29 @@ def connect_peer(headers="guest", body="anonymous"):
     except (TypeError, ValueError):
         return error_response("Peer id is invalid", "VALIDATION_ERROR")
 
+    if from_peer_id == to_peer_id:
+        return error_response("Cannot connect peer to itself", "SELF_CONNECT_NOT_ALLOWED")
+
     repo = get_repo()
     _, _, err = require_auth(repo, headers)
     if err:
         return err
 
     try:
-        connection = repo.create_peer_connection(from_peer_id, to_peer_id, status="PENDING")
-
         from_peer = repo.get_peer_detail_by_id(from_peer_id)
         to_peer = repo.get_peer_detail_by_id(to_peer_id)
-        connect_runtime = {
-            "attempted": False,
-            "ok": False,
-            "reason": "stream_not_attempted",
-        }
 
-        if from_peer is None or to_peer is None:
-            connect_runtime["reason"] = "target_peer_not_found"
+        if from_peer is None:
+            return error_response("Source peer not found", "SOURCE_PEER_NOT_FOUND")
+        if to_peer is None:
+            return error_response("Target peer not found", "TARGET_PEER_NOT_FOUND")
 
-        if from_peer is not None and to_peer is not None:
-            connect_runtime.update(establish_stream_connection(from_peer, to_peer, timeout=2.0))
+        connect_runtime = establish_stream_connection(from_peer, to_peer, timeout=2.0)
+        if not connect_runtime.get("ok"):
+            reason = str(connect_runtime.get("reason", "connect_failed"))
+            return error_response("Realtime connect failed: {}".format(reason), "CONNECT_RUNTIME_FAILED")
 
-        if connect_runtime.get("ok"):
-            connection, _ = repo.update_connection_status_by_id(connection["id"], "CONNECTED")
-        else:
-            connection, _ = repo.update_connection_status_by_id(connection["id"], "PENDING")
+        connection = repo.create_peer_connection(from_peer_id, to_peer_id, status="CONNECTED")
 
         return ok_response(
             data={
@@ -1220,7 +1220,7 @@ def list_channel_messages(headers="guest", body="anonymous"):
         return error_response(str(ex), "LIST_MESSAGES_FAILED")
 
 
-# Gửi tin nhắn direct: luôn lưu DB, realtime chỉ khi cả 2 peer đang ACTIVE
+# Gửi tin nhắn direct: chỉ lưu DB khi realtime delivery thành công
 @app.route('/messages/direct', methods=['POST'])
 def send_direct_message(headers="guest", body="anonymous"):
     payload = parse_json_body(body)
@@ -1275,6 +1275,33 @@ def send_direct_message(headers="guest", body="anonymous"):
             for link in connected_links
         )
 
+        if not sender_active or not target_active:
+            return error_response(
+                "Sender/target peer is inactive, realtime delivery aborted and DB write skipped",
+                "DIRECT_DELIVERY_BLOCKED",
+            )
+
+        if not has_connected_path:
+            return error_response(
+                "No CONNECTED path between peers, realtime delivery aborted and DB write skipped",
+                "DIRECT_DELIVERY_BLOCKED",
+            )
+
+        realtime_payload = {
+            "channel_id": channel_id,
+            "sender_peer_id": sender_peer_id,
+            "target_peer_id": target_peer_id,
+            "body": body_text,
+            "message_type": "DIRECT",
+            "client_sent_at": int(time.time()),
+        }
+        realtime_detail = send_direct_via_stream(sender_peer, target_peer, realtime_payload)
+        if not realtime_detail.get("ok"):
+            return error_response(
+                "Realtime delivery failed, DB write skipped",
+                "DIRECT_DELIVERY_FAILED",
+            )
+
         message = repo.create_message(
             channel_id=channel_id,
             sender_peer_id=sender_peer_id,
@@ -1287,41 +1314,11 @@ def send_direct_message(headers="guest", body="anonymous"):
 
         repo.create_notification(target_peer_id, target_user_id, message["id"])
 
-        delivery_mode = "stored_only"
-        realtime_status = "not_applicable"
-        realtime_detail = {"attempted": False, "ok": False, "reason": "not_attempted"}
-        if sender_active and target_active and has_connected_path:
-            realtime_detail = {
-                "attempted": False,
-                "ok": False,
-                "reason": "stream_not_connected",
-                "target_ip": target_peer["ip"],
-                "target_port": target_peer["port"],
-            }
-            realtime_detail.update(send_direct_via_stream(sender_peer, target_peer, message))
-            if realtime_detail.get("ok"):
-                delivery_mode = "realtime_and_stored"
-                realtime_status = "delivered_realtime"
-            else:
-                delivery_mode = "stored_only"
-                realtime_status = "stored_target_unreachable"
-        elif sender_active and target_active and not has_connected_path:
-            realtime_status = "stored_no_connection"
-            realtime_detail = {
-                "attempted": False,
-                "ok": False,
-                "reason": "connection_not_found",
-                "target_ip": target_peer["ip"],
-                "target_port": target_peer["port"],
-            }
-        else:
-            realtime_status = "target_or_sender_inactive"
-
         return ok_response(
             data={
                 "message": message,
-                "delivery_mode": delivery_mode,
-                "realtime_status": realtime_status,
+                "delivery_mode": "realtime_and_stored",
+                "realtime_status": "delivered_realtime",
                 "realtime_detail": realtime_detail,
                 "sender_active": sender_active,
                 "target_active": target_active,
@@ -1331,103 +1328,6 @@ def send_direct_message(headers="guest", body="anonymous"):
         )
     except Exception as ex:
         return error_response(str(ex), "DIRECT_MESSAGE_FAILED")
-
-# Broadcast message: store one copy per recipient and attempt realtime delivery if stream connection exists.
-@app.route('/messages/broadcast', methods=['POST'])
-def broadcast_message(headers="guest", body="anonymous"):
-    payload = parse_json_body(body)
-    if payload is None:
-        return error_response("Invalid JSON body", "INVALID_JSON")
-
-    err = require_fields(payload, ["sender_peer_id", "body"])
-    if err:
-        return error_response(err, "VALIDATION_ERROR")
-
-    try:
-        sender_peer_id = int(payload["sender_peer_id"])
-    except (TypeError, ValueError):
-        return error_response("sender_peer_id is invalid", "VALIDATION_ERROR")
-
-    channel_id = payload.get("channel_id")
-    if channel_id is not None:
-        try:
-            channel_id = int(channel_id)
-        except (TypeError, ValueError):
-            return error_response("channel_id is invalid", "VALIDATION_ERROR")
-
-    body_text = str(payload["body"]).strip()
-    if not body_text:
-        return error_response("Message body must not be empty", "VALIDATION_ERROR")
-
-    repo = get_repo()
-    _, _, err = require_auth(repo, headers)
-    if err:
-        return err
-
-    try:
-        sender_peer = repo.get_peer_detail_by_id(sender_peer_id)
-        if sender_peer is None:
-            return error_response("Sender peer not found", "SENDER_PEER_NOT_FOUND")
-
-        sender_user_id = sender_peer["user_id"]
-        sender_active = str(sender_peer.get("status", "")).upper() == "ACTIVE"
-
-        active_peers = repo.get_active_peers()
-        targets = [p for p in active_peers if int(p.get("id")) != sender_peer_id]
-
-        stored = 0
-        delivered_realtime = 0
-        results = []
-
-        for target in targets:
-            target_peer_id = int(target.get("id"))
-            target_peer = repo.get_peer_detail_by_id(target_peer_id)
-            if target_peer is None:
-                continue
-
-            target_user_id = target_peer["user_id"]
-
-            message = repo.create_message(
-                channel_id=channel_id,
-                sender_peer_id=sender_peer_id,
-                sender_user_id=sender_user_id,
-                body=body_text,
-                message_type="BROADCAST",
-                target_peer_id=target_peer_id,
-                target_user_id=target_user_id,
-            )
-            stored += 1
-
-            repo.create_notification(target_peer_id, target_user_id, message["id"])
-
-            target_active = str(target_peer.get("status", "")).upper() == "ACTIVE"
-            realtime_detail = {"attempted": False, "ok": False, "reason": "not_attempted"}
-            if sender_active and target_active:
-                runtime = send_direct_via_stream(sender_peer, target_peer, message)
-                realtime_detail = runtime
-                if runtime.get("ok"):
-                    delivered_realtime += 1
-
-            results.append(
-                {
-                    "target_peer_id": target_peer_id,
-                    "stored": True,
-                    "realtime": realtime_detail,
-                }
-            )
-
-        return ok_response(
-            data={
-                "sender_peer_id": sender_peer_id,
-                "total_targets": len(targets),
-                "total_stored": stored,
-                "total_realtime_delivered": delivered_realtime,
-                "results": results,
-            },
-            message="Broadcast message sent",
-        )
-    except Exception as ex:
-        return error_response(str(ex), "BROADCAST_MESSAGE_FAILED")
 
 # Lấy danh sách thông báo của user
 @app.route('/notifications/list', methods=['POST'])

@@ -30,6 +30,9 @@ node_modules/
 dist/
 build/
 
+# Frontend machine-local config
+www/env.js
+
 # IDE settings
 .vscode/
 .idea/

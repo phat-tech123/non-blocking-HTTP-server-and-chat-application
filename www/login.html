@@ -106,8 +106,10 @@
     </div>
 </div>
 
+<script src="env.js"></script>
 <script>
-const API_BASE = localStorage.getItem("apiBaseUrl") || (window.location.protocol + "//" + window.location.hostname + ":2026");
+const API_BASE = (window.APP_CONFIG && window.APP_CONFIG.API_BASE)
+    || (window.location.protocol + "//" + window.location.hostname + ":2026");
 
 function apiUrl(path){
     return API_BASE + path;
@@ -162,7 +164,6 @@ async function login(){
         console.log("LOGIN RESPONSE:", data);
 
         if(data.success){
-            localStorage.setItem("apiBaseUrl", API_BASE);
             localStorage.setItem("authBasic", "Basic " + btoa(username + ":" + password));
             // lưu user info
             localStorage.setItem("currentUser", JSON.stringify(data.data));

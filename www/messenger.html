@@ -78,6 +78,7 @@ input[type="text"]:focus { border-color: #38488f; }
     </div>
 </div>
 
+<script src="env.js"></script>
 <script>
 
 // ================== AUTH CHECK ==================
@@ -91,7 +92,8 @@ let selectedChannel = null;
 let selectedTargetPeerId = null;
 let chatPollingTimer = null;
 let channelLatestMessageId = {};
-const API_BASE = localStorage.getItem("apiBaseUrl") || (window.location.protocol + "//" + window.location.hostname + ":2026");
+const API_BASE = (window.APP_CONFIG && window.APP_CONFIG.API_BASE)
+    || (window.location.protocol + "//" + window.location.hostname + ":2026");
 
 function apiUrl(path){
     return API_BASE + path;

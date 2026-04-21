@@ -1277,7 +1277,7 @@ def send_direct_message(headers="guest", body="anonymous"):
 
         if not sender_active or not target_active:
             return error_response(
-                "Sender/target peer is inactive, realtime delivery aborted and DB write skipped",
+                "Hãy đợi đến khi người dùng hoạt động",
                 "DIRECT_DELIVERY_BLOCKED",
             )
 

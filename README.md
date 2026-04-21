@@ -4,8 +4,9 @@ Tài liệu này dùng cho tất cả thành viên trong nhóm.
 
 Mục tiêu của README:
 
-- Phần 1: Hướng dẫn chạy đầy đủ frontend và backend theo thứ tự phù hợp, kèm cách truy cập test trên máy thật cùng mạng LAN.
-- Phần 2: Hướng dẫn test ở server với 2 loại môi trường: nhiều máy ảo trên cùng 1 máy và các máy thực cùng mạng LAN.
+- Hướng dẫn chạy đầy đủ frontend và backend theo thứ tự phù hợp.
+- Hướng dẫn cấu hình `env.js` cho frontend.
+- Hướng dẫn chạy proxy cùng backend và frontend theo luồng thực tế.
 
 ## Điều kiện chung
 
@@ -54,13 +55,33 @@ python start_sampleapp.py --server-ip 0.0.0.0 --server-port 2026
 Lưu ý:
 
 - Chạy `0.0.0.0` để máy khác trong LAN có thể truy cập.
-- Test luồng peer-to-peer nhiều server được trình bày chi tiết ở PHẦN 2.
 
 ### 3) Khởi động frontend
 
 ```powershell
 python -m http.server 5500
 ```
+
+Thiết lập `env.js` trước khi mở web app:
+
+1. Tạo file `www/env.js` từ file mẫu:
+
+```powershell
+Copy-Item .\www\env.example.js .\www\env.js
+```
+
+2. Mở `www/env.js` và chỉnh `API_BASE` theo backend thực tế. Ví dụ:
+
+```javascript
+window.APP_CONFIG = {
+  API_BASE: "http://192.168.1.10:2026",
+};
+```
+
+Ghi chú:
+
+- Frontend hiện đọc API URL từ `www/env.js` (không dùng `localStorage` cho API base nữa).
+- Nếu `env.js` thiếu `API_BASE`, frontend sẽ fallback về `http://<host-hien-tai>:2026`.
 
 Truy cập:
 
@@ -74,7 +95,7 @@ Khi mở URL trên, trang sẽ tự chuyển đến login:
 http://127.0.0.1:5500/www/login.html
 ```
 
-### 4) Truy cập test trên máy thật cùng mạng LAN
+### 4) Truy cập từ máy khác trong cùng mạng LAN
 
 Giả sử backend chạy trên máy A:
 
@@ -97,7 +118,7 @@ http://192.168.1.10:5500/www/login.html
 ```
 
 3. Đăng ký/đăng nhập trực tiếp trên giao diện web.
-4. Nếu frontend có cấu hình API base URL, đặt thành:
+4. Đặt API backend trong `www/env.js` thành:
 
 ```text
 http://192.168.1.10:2026
@@ -109,117 +130,77 @@ Yêu cầu:
 
 - Mở firewall cho các cổng dùng để test (ít nhất `2026` và `5500` nếu có frontend).
 
----
+### 5) (Tùy chọn) Chạy proxy với backend và frontend
 
-## PHẦN 2 - Hướng dẫn test ở server
+Mục này là luồng chạy thực tế trên browser:
 
-### A) Test với nhiều máy ảo trên cùng 1 máy
+- Frontend gọi API qua Proxy.
+- Proxy forward request đến backend app (`start_sampleapp.py`).
 
-Áp dụng khi bạn dùng VMware/VirtualBox/Hyper-V hoặc container có IP riêng.
+#### 5.1 Chạy backend app
 
-#### A.1 Chuẩn bị
-
-- Tạo tối thiểu 2 VM: VM-A và VM-B.
-- Đảm bảo VM-A và VM-B ping được nhau.
-- Mỗi VM clone code và setup môi trường Python giống nhau.
-
-#### A.2 Cấu hình ví dụ
-
-- VM-A:
-  - IP: `10.10.10.21`
-  - HTTP: `2026`
-  - Stream: `3126`
-- VM-B:
-  - IP: `10.10.10.22`
-  - HTTP: `2027`
-  - Stream: `3127`
-
-#### A.3 Chạy service
-
-Trên VM-A:
+Mở terminal 1:
 
 ```powershell
 python start_sampleapp.py --server-ip 0.0.0.0 --server-port 2026
 ```
 
-Trên VM-B:
+#### 5.2 Cấu hình proxy trỏ tới backend app
 
-```powershell
-python start_sampleapp.py --server-ip 0.0.0.0 --server-port 2027
+Sửa `config/proxy.conf` theo IP máy chạy backend/proxy. Ví dụ IP máy là `192.168.1.10`:
+
+```text
+host "192.168.1.10:8080" {
+  proxy_pass http://192.168.1.10:2026;
+}
 ```
 
-#### A.4 Test luồng chính
+Ghi chú:
 
-Từ VM-A (hoặc máy test thứ ba), gọi lần lượt:
+- Chỉ cần 1 host mapping là đủ cho frontend dùng qua proxy.
+- Nếu test local trên cùng máy, có thể dùng:
 
-1. `/register` cho user A với `port=3126` qua IP VM-A.
-2. `/register` cho user B với `port=3127` qua IP VM-B.
-3. `/login` A và B.
-4. `/peers/connect` từ A sang B.
-5. `/messages/direct` từ A sang B.
-
-Kỳ vọng:
-
-- `runtime_connect.ok = true`
-- `connection.status = CONNECTED`
-- `delivery_mode = realtime_and_stored`
-
-### B) Test với các máy thực cùng mạng LAN
-
-#### B.1 Điều kiện
-
-- Máy A và máy B cùng subnet LAN.
-- Mỗi máy cài môi trường như phần 1.
-- Mở firewall cho các cổng test.
-
-#### B.2 Cấu hình ví dụ
-
-- Máy A:
-  - IP: `192.168.1.10`
-  - HTTP: `2026`
-  - Stream: `3126`
-- Máy B:
-  - IP: `192.168.1.11`
-  - HTTP: `2027`
-  - Stream: `3127`
-
-#### B.3 Chạy service trên từng máy
-
-Máy A:
-
-```powershell
-python start_sampleapp.py --server-ip 0.0.0.0 --server-port 2026
+```text
+host "127.0.0.1:8080" {
+  proxy_pass http://127.0.0.1:2026;
+}
 ```
 
-Máy B:
+#### 5.3 Chạy proxy
+
+Mở terminal 2:
 
 ```powershell
-python start_sampleapp.py --server-ip 0.0.0.0 --server-port 2027
+python start_proxy.py --server-ip 0.0.0.0 --server-port 8080
 ```
 
-#### B.4 Test API qua IP LAN
+#### 5.4 Cấu hình frontend gọi qua proxy
 
-Ví dụ đăng ký nhanh:
+Mở `www/env.js`, đặt `API_BASE` là URL proxy (không trỏ trực tiếp backend):
+
+```javascript
+window.APP_CONFIG = {
+  API_BASE: "http://192.168.1.10:8080",
+};
+```
+
+#### 5.5 Chạy frontend và truy cập browser
+
+Mở terminal 3:
 
 ```powershell
-Invoke-RestMethod -Method POST -Uri http://192.168.1.10:2026/register -ContentType application/json -Body '{"username":"alice_lan","password":"123456","port":3126,"display_name":"Alice LAN"}'
-Invoke-RestMethod -Method POST -Uri http://192.168.1.11:2027/register -ContentType application/json -Body '{"username":"bob_lan","password":"123456","port":3127,"display_name":"Bob LAN"}'
+python -m http.server 5500
 ```
 
-Sau đó login, connect, reconnect-active, direct message tương tự phần A.
+Mở browser:
 
-### C) Checklist lỗi thường gặp
+```text
+http://192.168.1.10:5500/www/login.html
+```
 
-- `bind_failed`:
-  - Stream port trùng HTTP port.
-  - Port đã bị process khác sử dụng.
-- `handshake_failed` hoặc `socket_error`:
-  - Sai IP/port peer.
-  - Firewall chặn.
-  - Máy đích chưa chạy listener stream.
-- `stored_only` thay vì realtime:
-  - Chưa có connection `CONNECTED`.
-  - Stream connection chưa establish thành công.
+Khi đăng ký/đăng nhập/chat trên giao diện web, request sẽ đi theo luồng:
+
+`Frontend (5500) -> Proxy (8080) -> Backend app (2026)`
 
 ---
 
@@ -236,19 +217,3 @@ Sau đó login, connect, reconnect-active, direct message tương tự phần A.
 - POST /messages/direct
 - POST /notifications/list
 - POST /notifications/read
-
-## Chạy proxy và backend riêng (tùy chọn)
-
-Backend:
-
-```powershell
-python start_backend.py --server-ip 0.0.0.0 --server-port 9000
-```
-
-Proxy:
-
-```powershell
-python start_proxy.py --server-ip 0.0.0.0 --server-port 8080
-```
-
-Lưu ý: `config/proxy.conf` đang có host/IP tĩnh, cần chỉnh theo môi trường thật trước khi dùng.
